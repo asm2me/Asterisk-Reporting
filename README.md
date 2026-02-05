@@ -17,9 +17,9 @@ A lightweight PHP app for browsing Asterisk/FreePBX/Issabel CDRs with:
 
 Quick preview:
 
-![Login](docs/screenshots/login.png)
-![Dashboard](docs/screenshots/dashboard-top.png)
-![User Management](docs/screenshots/user-management.png)
+![Login](screenshots/login.png)
+![Dashboard](screenshots/dashboard-top.png)
+![User Management](screenshots/user-management.png)
 
 ---
 
