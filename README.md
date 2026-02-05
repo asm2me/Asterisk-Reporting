@@ -19,6 +19,7 @@ Quick preview:
 
 ![Login](screenshots/login.png)
 ![Dashboard](screenshots/dashboard-top.png)
+![CDR Table](screenshots/table.png)
 ![User Management](screenshots/user-management.png)
 
 ---
