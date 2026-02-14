@@ -206,7 +206,43 @@ function requireSessionLogin(array $usersData): array {
     exit;
 }
 
-/* -------------------- Issabel/FreePBX DB creds -------------------- */
+/* -------------------- DB creds (FreePBX/Issabel INDEPENDENT) -------------------- */
+/**
+ * Parse /etc/freepbx.conf without including it.
+ * Supports lines like:
+ *   $amp_conf["AMPDBUSER"] = "freepbxuser";
+ *   $amp_conf['AMPDBPASS'] = "secret";
+ *   $amp_conf["AMPDBHOST"] = "localhost";
+ *   $amp_conf["AMPDBPORT"] = "3306";   (optional)
+ *   $amp_conf["AMPDBNAME"] = "asterisk"; (optional)
+ */
+function parseFreepbxConfText(string $path): array {
+    if (!is_readable($path)) return [];
+    $raw = file_get_contents($path);
+    if ($raw === false) return [];
+
+    $out = [];
+    // Match: $amp_conf["KEY"] = "VALUE";
+    $re = '/\$amp_conf\[\s*(["\'])([A-Z0-9_]+)\1\s*\]\s*=\s*(["\'])(.*?)\3\s*;/m';
+    if (preg_match_all($re, $raw, $m, PREG_SET_ORDER)) {
+        foreach ($m as $mm) {
+            $key = $mm[2];
+            $val = stripcslashes($mm[4]); // handles \" etc
+            $out[$key] = $val;
+        }
+    }
+    return $out;
+}
+
+/**
+ * Parse /etc/amportal.conf (key=value)
+ * Supports:
+ *   AMPDBHOST=localhost
+ *   AMPDBUSER=freepbxuser
+ *   AMPDBPASS=secret
+ *   AMPDBNAME=asterisk   (optional)
+ *   AMPDBPORT=3306       (optional)
+ */
 function parseAmportalConf(string $path): array {
     $cfg = [];
     $lines = @file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
@@ -216,37 +252,68 @@ function parseAmportalConf(string $path): array {
         if ($line === '' || $line[0] === '#') continue;
         $pos = strpos($line, '=');
         if ($pos === false) continue;
-        $cfg[trim(substr($line, 0, $pos))] = trim(substr($line, $pos + 1));
+        $k = trim(substr($line, 0, $pos));
+        $v = trim(substr($line, $pos + 1));
+        // Strip optional surrounding quotes
+        if ((strlen($v) >= 2) && (($v[0] === '"' && $v[strlen($v)-1] === '"') || ($v[0] === "'" && $v[strlen($v)-1] === "'"))) {
+            $v = substr($v, 1, -1);
+        }
+        $cfg[$k] = $v;
     }
     return $cfg;
 }
-function readFreepbxConf(string $path): array {
-    if (!is_readable($path)) return [];
-    $amp_conf = [];
-    (function () use ($path, &$amp_conf) {
-        include $path;
-        if (isset($GLOBALS['amp_conf']) && is_array($GLOBALS['amp_conf'])) $amp_conf = $GLOBALS['amp_conf'];
-    })();
-    return $amp_conf;
-}
-function getDbCreds(): array {
-    $amportal = '/etc/amportal.conf';
-    $freepbx  = '/etc/freepbx.conf';
 
-    if (is_readable($amportal)) {
-        $cfg = parseAmportalConf($amportal);
-        if (!empty($cfg['AMPDBHOST']) && !empty($cfg['AMPDBUSER']) && array_key_exists('AMPDBPASS', $cfg)) {
-            return ['host'=>$cfg['AMPDBHOST'],'user'=>$cfg['AMPDBUSER'],'pass'=>$cfg['AMPDBPASS'],'source'=>$amportal];
+/**
+ * Return DB creds without requiring FreePBX/Issabel runtime.
+ * Prefers /etc/freepbx.conf, falls back to /etc/amportal.conf.
+ */
+function getDbCreds(): array {
+    $freepbx  = '/etc/freepbx.conf';
+    $amportal = '/etc/amportal.conf';
+
+    // Prefer /etc/freepbx.conf (newer FreePBX)
+    $fc = parseFreepbxConfText($freepbx);
+    if (!empty($fc)) {
+        $host = $fc['AMPDBHOST'] ?? $fc['AMPDBHOSTNAME'] ?? 'localhost';
+        $user = $fc['AMPDBUSER'] ?? null;
+        $pass = array_key_exists('AMPDBPASS', $fc) ? $fc['AMPDBPASS'] : null;
+        $port = $fc['AMPDBPORT'] ?? null;
+        $name = $fc['AMPDBNAME'] ?? null;
+
+        if ($user !== null && $pass !== null) {
+            return [
+                'host'   => (string)$host,
+                'user'   => (string)$user,
+                'pass'   => (string)$pass,
+                'port'   => ($port !== null && ctype_digit((string)$port)) ? (int)$port : null,
+                'dbname' => ($name !== null && $name !== '') ? (string)$name : null,
+                'source' => $freepbx,
+            ];
         }
     }
-    if (is_readable($freepbx)) {
-        $amp = readFreepbxConf($freepbx);
-        $host = $amp['AMPDBHOST'] ?? $amp['AMPDBHOSTNAME'] ?? null;
-        $user = $amp['AMPDBUSER'] ?? null;
-        $pass = $amp['AMPDBPASS'] ?? null;
-        if ($host && $user && $pass !== null) return ['host'=>(string)$host,'user'=>(string)$user,'pass'=>(string)$pass,'source'=>$freepbx];
+
+    // Fallback /etc/amportal.conf (older Issabel/FreePBX)
+    $ac = parseAmportalConf($amportal);
+    if (!empty($ac)) {
+        $host = $ac['AMPDBHOST'] ?? 'localhost';
+        $user = $ac['AMPDBUSER'] ?? null;
+        $pass = array_key_exists('AMPDBPASS', $ac) ? $ac['AMPDBPASS'] : null;
+        $port = $ac['AMPDBPORT'] ?? null;
+        $name = $ac['AMPDBNAME'] ?? null;
+
+        if ($user !== null && $pass !== null) {
+            return [
+                'host'   => (string)$host,
+                'user'   => (string)$user,
+                'pass'   => (string)$pass,
+                'port'   => ($port !== null && ctype_digit((string)$port)) ? (int)$port : null,
+                'dbname' => ($name !== null && $name !== '') ? (string)$name : null,
+                'source' => $amportal,
+            ];
+        }
     }
-    fail("Could not read DB credentials from /etc/amportal.conf or /etc/freepbx.conf");
+
+    fail("Could not read DB credentials from /etc/freepbx.conf or /etc/amportal.conf");
 }
 
 /* -------------------- recordings (secure) -------------------- */
@@ -1264,3 +1331,4 @@ document.addEventListener('DOMContentLoaded', () => {
 
 </body>
 </html>
+
