@@ -346,57 +346,86 @@ $gateway = (string)($filters['gateway'] ?? '');
           <tr id="<?= h($rowId) ?>" class="detail-row" style="display:none;">
             <td colspan="12">
               <div class="detail-panel">
-                <h4 style="margin:0 0 10px 0;color:var(--accent);">Call Transaction Details</h4>
-                <div class="detail-grid">
-                  <div class="detail-item">
-                    <span class="detail-label">Call Date:</span>
-                    <span class="detail-value"><?= h((string)($r['calldate'] ?? '')) ?></span>
+                <?php
+                $linkedId = (string)($r['linkedid'] ?? $r['uniqueid'] ?? '');
+                $callLegs = fetchCallLegs($CONFIG, $pdo, $linkedId);
+                $legCount = count($callLegs);
+                ?>
+                <h4 style="margin:0 0 10px 0;color:var(--accent);">
+                  Call Transaction Details
+                  <?php if ($legCount > 1): ?>
+                    <span style="font-size:12px;color:var(--muted);font-weight:normal;">(<?= (int)$legCount ?> leg<?= $legCount > 1 ? 's' : '' ?>)</span>
+                  <?php endif; ?>
+                </h4>
+
+                <?php foreach ($callLegs as $legIdx => $leg):
+                  $legDisp = strtoupper((string)($leg['disposition'] ?? ''));
+                  $legCls = 'warn';
+                  if ($legDisp === 'ANSWERED') $legCls = 'ok';
+                  elseif ($legDisp === 'BUSY' || $legDisp === 'FAILED' || $legDisp === 'CONGESTION' || $legDisp === 'CONGESTED') $legCls = 'bad';
+                ?>
+                  <?php if ($legIdx > 0): ?>
+                    <hr style="margin:16px 0;border:none;border-top:1px solid var(--line);">
+                  <?php endif; ?>
+
+                  <div style="margin-bottom:4px;font-size:12px;color:var(--muted);font-weight:600;">
+                    LEG <?= (int)($legIdx + 1) ?>
+                    <?php if ($leg['uniqueid'] === $r['uniqueid']): ?>
+                      <span style="color:var(--accent);">(Main Record)</span>
+                    <?php endif; ?>
                   </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Caller ID:</span>
-                    <span class="detail-value"><?= h((string)($r['clid'] ?? '')) ?></span>
+
+                  <div class="detail-grid">
+                    <div class="detail-item">
+                      <span class="detail-label">Call Date:</span>
+                      <span class="detail-value"><?= h((string)($leg['calldate'] ?? '')) ?></span>
+                    </div>
+                    <div class="detail-item">
+                      <span class="detail-label">Caller ID:</span>
+                      <span class="detail-value"><?= h((string)($leg['clid'] ?? '')) ?></span>
+                    </div>
+                    <div class="detail-item">
+                      <span class="detail-label">Source:</span>
+                      <span class="detail-value"><?= h((string)($leg['src'] ?? '')) ?></span>
+                    </div>
+                    <div class="detail-item">
+                      <span class="detail-label">Destination:</span>
+                      <span class="detail-value"><?= h((string)($leg['dst'] ?? '')) ?></span>
+                    </div>
+                    <div class="detail-item">
+                      <span class="detail-label">Channel:</span>
+                      <span class="detail-value mono"><?= h((string)($leg['channel'] ?? '')) ?></span>
+                    </div>
+                    <div class="detail-item">
+                      <span class="detail-label">Destination Channel:</span>
+                      <span class="detail-value mono"><?= h((string)($leg['dstchannel'] ?? '')) ?></span>
+                    </div>
+                    <div class="detail-item">
+                      <span class="detail-label">Context:</span>
+                      <span class="detail-value"><?= h((string)($leg['dcontext'] ?? '')) ?></span>
+                    </div>
+                    <div class="detail-item">
+                      <span class="detail-label">Disposition:</span>
+                      <span class="detail-value"><span class="disp <?= h($legCls) ?>"><?= h($legDisp) ?></span></span>
+                    </div>
+                    <div class="detail-item">
+                      <span class="detail-label">Duration:</span>
+                      <span class="detail-value"><?= h((string)($leg['duration'] ?? '0')) ?> sec</span>
+                    </div>
+                    <div class="detail-item">
+                      <span class="detail-label">Billsec:</span>
+                      <span class="detail-value"><?= h((string)($leg['billsec'] ?? '0')) ?> sec</span>
+                    </div>
+                    <div class="detail-item">
+                      <span class="detail-label">Unique ID:</span>
+                      <span class="detail-value mono"><?= h((string)($leg['uniqueid'] ?? '')) ?></span>
+                    </div>
+                    <div class="detail-item">
+                      <span class="detail-label">Recording File:</span>
+                      <span class="detail-value mono"><?= h((string)($leg['recordingfile'] ?? '') ?: 'None') ?></span>
+                    </div>
                   </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Source:</span>
-                    <span class="detail-value"><?= h((string)($r['src'] ?? '')) ?></span>
-                  </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Destination:</span>
-                    <span class="detail-value"><?= h((string)($r['dst'] ?? '')) ?></span>
-                  </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Channel:</span>
-                    <span class="detail-value mono"><?= h((string)($r['channel'] ?? '')) ?></span>
-                  </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Destination Channel:</span>
-                    <span class="detail-value mono"><?= h((string)($r['dstchannel'] ?? '')) ?></span>
-                  </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Context:</span>
-                    <span class="detail-value"><?= h((string)($r['dcontext'] ?? '')) ?></span>
-                  </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Disposition:</span>
-                    <span class="detail-value"><span class="disp <?= h($cls) ?>"><?= h((string)($r['disposition'] ?? '')) ?></span></span>
-                  </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Duration:</span>
-                    <span class="detail-value"><?= h((string)($r['duration'] ?? '0')) ?> sec</span>
-                  </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Billsec:</span>
-                    <span class="detail-value"><?= h((string)($r['billsec'] ?? '0')) ?> sec</span>
-                  </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Unique ID:</span>
-                    <span class="detail-value mono"><?= h($uidVal) ?></span>
-                  </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Recording File:</span>
-                    <span class="detail-value mono"><?= h($recVal ?: 'None') ?></span>
-                  </div>
-                </div>
+                <?php endforeach; ?>
               </div>
             </td>
           </tr>

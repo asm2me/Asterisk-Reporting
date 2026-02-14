@@ -171,7 +171,8 @@ function fetchPageRows(array $CONFIG, PDO $pdo, array $me, array $filters): arra
     $offset = ($pageNo - 1) * $per;
 
     $sql = "
-    SELECT calldate, clid, src, dst, channel, dstchannel, dcontext, disposition, duration, billsec, uniqueid, recordingfile
+    SELECT calldate, clid, src, dst, channel, dstchannel, dcontext, disposition, duration, billsec, uniqueid, recordingfile,
+           COALESCE(linkedid, uniqueid) as linkedid
     FROM `{$cdrTable}`
     WHERE {$whereSql}
     ORDER BY {$sort} {$dir}
@@ -190,6 +191,28 @@ function fetchPageRows(array $CONFIG, PDO $pdo, array $me, array $filters): arra
     $st->bindValue(':off', $offset, PDO::PARAM_INT);
     $st->execute();
     return $st->fetchAll() ?: [];
+}
+
+function fetchCallLegs(array $CONFIG, PDO $pdo, string $linkedid): array {
+    if ($linkedid === '') return [];
+
+    $cdrTable = $CONFIG['cdrTable'];
+
+    $sql = "
+    SELECT calldate, clid, src, dst, channel, dstchannel, dcontext, disposition, duration, billsec, uniqueid, recordingfile,
+           COALESCE(linkedid, uniqueid) as linkedid
+    FROM `{$cdrTable}`
+    WHERE COALESCE(linkedid, uniqueid) = :linkedid
+    ORDER BY calldate ASC, uniqueid ASC
+    ";
+
+    try {
+        $st = $pdo->prepare($sql);
+        $st->execute([':linkedid' => $linkedid]);
+        return $st->fetchAll() ?: [];
+    } catch (Throwable $e) {
+        return [];
+    }
 }
 
 function streamCsv(array $CONFIG, PDO $pdo, array $me, array $filters): void {
