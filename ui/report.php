@@ -121,10 +121,27 @@ $gateway = (string)($filters['gateway'] ?? '');
   .pager .right{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .mini{padding:8px 10px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.06);color:var(--text);font-size:12px;white-space:nowrap}
 
+  /* Expandable details */
+  .expand-toggle{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;cursor:pointer;
+                 background:rgba(122,162,255,.12);border:1px solid rgba(122,162,255,.25);border-radius:6px;user-select:none;}
+  .expand-toggle:hover{background:rgba(122,162,255,.20)}
+  .expand-icon{font-weight:bold;font-size:16px;line-height:1;transition:transform 0.2s;}
+  .expand-toggle.expanded .expand-icon{transform:rotate(45deg);}
+
+  .detail-row{background:rgba(122,162,255,.04);}
+  .detail-row td{padding:0 !important;border-bottom:none !important;}
+  .detail-panel{padding:16px;border-top:2px solid rgba(122,162,255,.3);}
+  .detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;}
+  .detail-item{display:flex;flex-direction:column;gap:4px;}
+  .detail-label{font-size:11px;color:var(--muted);text-transform:uppercase;font-weight:600;}
+  .detail-value{font-size:13px;color:var(--text);word-break:break-all;}
+
   @media (max-width: 900px){
     table{min-width:0 !important;}
     thead{display:none;}
-    tbody tr{display:block;border-bottom:1px solid var(--line);padding:10px 10px 2px 10px;}
+    tbody tr.main-row{display:block;border-bottom:1px solid var(--line);padding:10px 10px 2px 10px;}
+    tbody tr.detail-row{display:none;}
+    tbody tr.detail-row.show{display:block;padding:10px;}
     tbody td{display:flex;gap:10px;justify-content:space-between;border-bottom:none;padding:8px 0;}
     tbody td::before{content: attr(data-label);color: var(--muted);font-size:12px;font-weight:600;padding-right:10px;white-space:nowrap;}
     tbody td[data-label="Recording"]{flex-direction:column;align-items:flex-start;}
@@ -268,6 +285,7 @@ $gateway = (string)($filters['gateway'] ?? '');
     <table>
       <thead>
         <tr>
+          <th style="width:30px;"></th>
           <th><?= sortLink('calldate','Call Date',$sort,$dir) ?></th>
           <th>CLID</th>
           <th><?= sortLink('src','SRC',$sort,$dir) ?></th>
@@ -296,8 +314,14 @@ $gateway = (string)($filters['gateway'] ?? '');
           $hasRec = ($uidVal !== '' && $recVal !== '');
           $playUrl = buildUrl(['action'=>'play','uid'=>$uidVal]);
           $dlUrl   = buildUrl(['action'=>'download','uid'=>$uidVal]);
+          $rowId = 'row-' . $shown;
         ?>
-          <tr>
+          <tr class="main-row">
+            <td style="text-align:center;">
+              <span class="expand-toggle" onclick="toggleDetails('<?= h($rowId) ?>')" title="Show details">
+                <span class="expand-icon">+</span>
+              </span>
+            </td>
             <td data-label="Call Date"><?= h((string)($r['calldate'] ?? '')) ?></td>
             <td data-label="CLID"><?= h((string)($r['clid'] ?? '')) ?></td>
             <td data-label="SRC"><?= h((string)($r['src'] ?? '')) ?></td>
@@ -319,9 +343,66 @@ $gateway = (string)($filters['gateway'] ?? '');
               <?php endif; ?>
             </td>
           </tr>
+          <tr id="<?= h($rowId) ?>" class="detail-row" style="display:none;">
+            <td colspan="12">
+              <div class="detail-panel">
+                <h4 style="margin:0 0 10px 0;color:var(--accent);">Call Transaction Details</h4>
+                <div class="detail-grid">
+                  <div class="detail-item">
+                    <span class="detail-label">Call Date:</span>
+                    <span class="detail-value"><?= h((string)($r['calldate'] ?? '')) ?></span>
+                  </div>
+                  <div class="detail-item">
+                    <span class="detail-label">Caller ID:</span>
+                    <span class="detail-value"><?= h((string)($r['clid'] ?? '')) ?></span>
+                  </div>
+                  <div class="detail-item">
+                    <span class="detail-label">Source:</span>
+                    <span class="detail-value"><?= h((string)($r['src'] ?? '')) ?></span>
+                  </div>
+                  <div class="detail-item">
+                    <span class="detail-label">Destination:</span>
+                    <span class="detail-value"><?= h((string)($r['dst'] ?? '')) ?></span>
+                  </div>
+                  <div class="detail-item">
+                    <span class="detail-label">Channel:</span>
+                    <span class="detail-value mono"><?= h((string)($r['channel'] ?? '')) ?></span>
+                  </div>
+                  <div class="detail-item">
+                    <span class="detail-label">Destination Channel:</span>
+                    <span class="detail-value mono"><?= h((string)($r['dstchannel'] ?? '')) ?></span>
+                  </div>
+                  <div class="detail-item">
+                    <span class="detail-label">Context:</span>
+                    <span class="detail-value"><?= h((string)($r['dcontext'] ?? '')) ?></span>
+                  </div>
+                  <div class="detail-item">
+                    <span class="detail-label">Disposition:</span>
+                    <span class="detail-value"><span class="disp <?= h($cls) ?>"><?= h((string)($r['disposition'] ?? '')) ?></span></span>
+                  </div>
+                  <div class="detail-item">
+                    <span class="detail-label">Duration:</span>
+                    <span class="detail-value"><?= h((string)($r['duration'] ?? '0')) ?> sec</span>
+                  </div>
+                  <div class="detail-item">
+                    <span class="detail-label">Billsec:</span>
+                    <span class="detail-value"><?= h((string)($r['billsec'] ?? '0')) ?> sec</span>
+                  </div>
+                  <div class="detail-item">
+                    <span class="detail-label">Unique ID:</span>
+                    <span class="detail-value mono"><?= h($uidVal) ?></span>
+                  </div>
+                  <div class="detail-item">
+                    <span class="detail-label">Recording File:</span>
+                    <span class="detail-value mono"><?= h($recVal ?: 'None') ?></span>
+                  </div>
+                </div>
+              </div>
+            </td>
+          </tr>
         <?php endforeach; ?>
         <?php if ($shown === 0): ?>
-          <tr><td colspan="11" style="color:var(--muted);padding:16px;">No records for this filter.</td></tr>
+          <tr><td colspan="12" style="color:var(--muted);padding:16px;">No records for this filter.</td></tr>
         <?php endif; ?>
       </tbody>
     </table>
@@ -442,6 +523,19 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 });
+
+function toggleDetails(rowId) {
+  const detailRow = document.getElementById(rowId);
+  const toggle = event.currentTarget;
+
+  if (detailRow.style.display === 'none' || detailRow.style.display === '') {
+    detailRow.style.display = 'table-row';
+    toggle.classList.add('expanded');
+  } else {
+    detailRow.style.display = 'none';
+    toggle.classList.remove('expanded');
+  }
+}
 </script>
 
 </body>
