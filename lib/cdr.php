@@ -1,617 +1,306 @@
 <?php
 declare(strict_types=1);
 
-namespace Supervisor\Lib;
-
-use PDO;
-
-function grpKeySql(): string {
-    return "COALESCE(NULLIF(linkedid,''), uniqueid)";
+function buildAcl(array $me, array &$aclParams): string {
+    if (!empty($me['is_admin'])) return '1=1';
+    $allowedExts = (array)($me['extensions'] ?? []);
+    if (count($allowedExts) === 0) return '1=0';
+    return aclWhereByChannel($allowedExts, $aclParams);
 }
 
-function normalizeGateway(string $gw): string {
-    $gw = trim($gw);
-    if ($gw === '') return '';
-    $gw = str_replace("\0", '', $gw);
-    $gw = rtrim($gw, '%');
-    $gw = rtrim($gw, '-');
-    return $gw;
-}
-
-function gatewayLike(string $gw): string {
-    $gw = normalizeGateway($gw);
-    if ($gw === '') return '';
-    return $gw . "-%";
-}
-
-/**
- * Prefix placeholders in ACL where/params so we can embed the same ACL multiple times.
- */
-function prefixWhereAndParams(string $where, array $params, string $prefix): array {
-    $newWhere = $where;
-    $newParams = [];
-
-    foreach ($params as $k => $v) {
-        $name = ltrim((string)$k, ':');
-        $newKey = ':' . $prefix . '_' . $name;
-        $newWhere = str_replace(':' . $name, $newKey, $newWhere);
-        $newParams[$newKey] = $v;
-    }
-
-    return ['where' => $newWhere, 'params' => $newParams];
-}
-
-function buildGatewayClause(string $gateway, array &$params, string $paramBase): string {
-    $like = gatewayLike($gateway);
-    if ($like === '') return "(1=1)";
-    $p1 = ":{$paramBase}_ch";
-    $p2 = ":{$paramBase}_dch";
-    $params[$p1] = $like;
-    $params[$p2] = $like;
-    return "(channel LIKE {$p1} OR dstchannel LIKE {$p2})";
-}
-
-/**
- * Allowed extension channel/dstchannel LIKE clauses.
- * Supports:
- *  - PJSIP/100-...
- *  - SIP/100-...
- *  - Local/100@...
- */
-function buildAllowedExtLikeClauses(array $allowedExts, array &$params, string $prefix): string {
-    $parts = [];
-    $i = 0;
-
-    foreach ($allowedExts as $e) {
-        $e = (string)$e;
-        if ($e === '' || !preg_match('/^[0-9]+$/', $e)) continue;
-
-        $p1 = ":{$prefix}_pjsip_{$i}";
-        $p2 = ":{$prefix}_sip_{$i}";
-        $p3 = ":{$prefix}_local_{$i}";
-
-        $params[$p1] = "PJSIP/{$e}-%";
-        $params[$p2] = "SIP/{$e}-%";
-        $params[$p3] = "Local/{$e}@%";
-
-        $parts[] =
-            "(channel LIKE {$p1} OR dstchannel LIKE {$p1} " .
-            "OR channel LIKE {$p2} OR dstchannel LIKE {$p2} " .
-            "OR channel LIKE {$p3} OR dstchannel LIKE {$p3})";
-        $i++;
-    }
-
-    if (!$parts) return "(1=0)";
-    return "(" . implode(" OR ", $parts) . ")";
-}
-
-/**
- * Collect placeholders in SQL and verify they exist in params.
- */
-function requireBindAll(string $sql, array $params): void {
-    if (preg_match_all('/:\w+/', $sql, $m)) {
-        $need = array_unique($m[0]);
-        foreach ($need as $n) {
-            if (!array_key_exists($n, $params)) {
-                throw new \RuntimeException("SQL parameter missing: {$n}");
-            }
-        }
-    }
-}
-
-/**
- * Return ONLY the params that appear in this SQL.
- */
-function paramsForSql(string $sql, array $params): array {
-    if (!preg_match_all('/:\w+/', $sql, $m)) return [];
-    $need = array_unique($m[0]);
-    $out = [];
-    foreach ($need as $n) {
-        if (array_key_exists($n, $params)) $out[$n] = $params[$n];
-    }
-    return $out;
-}
-
-/**
- * Bind all parameters explicitly and execute.
- * This avoids PDO/MariaDB "HY093 invalid parameter number" that can occur with execute($params).
- */
-function prepareBindExecute(PDO $pdo, string $sql, array $params): \PDOStatement {
-    $st = $pdo->prepare($sql);
-    $bind = paramsForSql($sql, $params);
-
-    foreach ($bind as $k => $v) {
-        // bind ints safely for LIMIT/OFFSET and numeric filters
-        if ($k === ':lim' || $k === ':off' || is_int($v)) {
-            $st->bindValue($k, (int)$v, PDO::PARAM_INT);
-        } else {
-            $st->bindValue($k, (string)$v, PDO::PARAM_STR);
-        }
-    }
-
-    $st->execute();
-    return $st;
-}
-
-/**
- * Build leg-level WHERE clause with placeholder prefix (w1_, w2_, etc.)
- * Prevents duplicated placeholders when embedded multiple times.
- */
-function buildLegWhere(array $filters, array $acl, array &$params, string $prefix): string {
+function buildWhere(array $CONFIG, array $me, array $filters, array &$params): string {
     $where = [];
+    $params = [];
 
-    $fromKey = ':' . $prefix . '_fromDt';
-    $toKey   = ':' . $prefix . '_toDt';
+    $fromDt = $filters['from'] . ' 00:00:00';
+    $toDt   = $filters['to']   . ' 23:59:59';
 
-    $where[] = "calldate >= {$fromKey}";
-    $where[] = "calldate <= {$toKey}";
-    $params[$fromKey] = (string)$filters['fromDt'];
-    $params[$toKey]   = (string)$filters['toDt'];
+    $where[] = "calldate >= :fromDt";
+    $where[] = "calldate <= :toDt";
+    $params[':fromDt'] = $fromDt;
+    $params[':toDt']   = $toDt;
 
-    $aclWhere  = (string)($acl['where'] ?? '1=1');
-    $aclParams = (array)($acl['params'] ?? []);
-    $aclBlock = prefixWhereAndParams($aclWhere, $aclParams, $prefix . '_acl');
-    $where[] = '(' . $aclBlock['where'] . ')';
-    foreach ($aclBlock['params'] as $k => $v) $params[$k] = $v;
+    $aclParams = [];
+    $where[] = buildAcl($me, $aclParams);
+    $params = array_merge($params, $aclParams);
 
-    $q = trim((string)($filters['q'] ?? ''));
-    if ($q !== '') {
-        $like = '%' . $q . '%';
-        $q1 = ':' . $prefix . '_q1';
-        $q2 = ':' . $prefix . '_q2';
-        $q3 = ':' . $prefix . '_q3';
-        $q4 = ':' . $prefix . '_q4';
-        $q5 = ':' . $prefix . '_q5';
-        $q6 = ':' . $prefix . '_q6';
-        $where[] = "(src LIKE {$q1} OR dst LIKE {$q2} OR clid LIKE {$q3} OR uniqueid LIKE {$q4} OR channel LIKE {$q5} OR dstchannel LIKE {$q6})";
-        $params[$q1] = $like;
-        $params[$q2] = $like;
-        $params[$q3] = $like;
-        $params[$q4] = $like;
-        $params[$q5] = $like;
-        $params[$q6] = $like;
+    $src = (string)($filters['src'] ?? '');
+    if ($src !== '') {
+        $where[] = "(
+            src = :src_num
+            OR channel LIKE :src_ch_sip
+            OR channel LIKE :src_ch_psip
+        )";
+        $params[':src_num']     = $src;
+        $params[':src_ch_sip']  = "SIP/{$src}-%";
+        $params[':src_ch_psip'] = "PJSIP/{$src}-%";
     }
 
-    $src = trim((string)($filters['src'] ?? ''));
-    if ($src !== '' && preg_match('/^[0-9]+$/', $src)) {
-        $pNum = ':' . $prefix . '_src_num';
-        $pCh1 = ':' . $prefix . '_src_ch1';
-        $pCh2 = ':' . $prefix . '_src_ch2';
-        $where[] = "(src = {$pNum} OR channel LIKE {$pCh1} OR channel LIKE {$pCh2})";
-        $params[$pNum] = $src;
-        $params[$pCh1] = "SIP/{$src}-%";
-        $params[$pCh2] = "PJSIP/{$src}-%";
+    $dst = (string)($filters['dst'] ?? '');
+    if ($dst !== '') {
+        $where[] = "(
+            dst = :dst_num
+            OR dstchannel LIKE :dst_ch_sip
+            OR dstchannel LIKE :dst_ch_psip
+        )";
+        $params[':dst_num']     = $dst;
+        $params[':dst_ch_sip']  = "SIP/{$dst}-%";
+        $params[':dst_ch_psip'] = "PJSIP/{$dst}-%";
     }
 
-    $dst = trim((string)($filters['dst'] ?? ''));
-    if ($dst !== '' && preg_match('/^[0-9]+$/', $dst)) {
-        $pNum = ':' . $prefix . '_dst_num';
-        $pCh1 = ':' . $prefix . '_dst_ch1';
-        $pCh2 = ':' . $prefix . '_dst_ch2';
-        $where[] = "(dst = {$pNum} OR dstchannel LIKE {$pCh1} OR dstchannel LIKE {$pCh2})";
-        $params[$pNum] = $dst;
-        $params[$pCh1] = "SIP/{$dst}-%";
-        $params[$pCh2] = "PJSIP/{$dst}-%";
-    }
-
-    $disp = strtoupper(trim((string)($filters['disposition'] ?? '')));
-    if ($disp !== '' && preg_match('/^[A-Z_ ]+$/', $disp)) {
+    $disp = (string)($filters['disposition'] ?? '');
+    if ($disp !== '') {
         if ($disp === 'NO ANSWER') {
             $where[] = "(disposition='NO ANSWER' OR disposition='NOANSWER')";
-        } elseif ($disp === 'CONGESTION') {
+        } elseif ($disp === 'CONGESTION' || $disp === 'CONGESTED') {
             $where[] = "(disposition='CONGESTION' OR disposition='CONGESTED')";
         } else {
-            $p = ':' . $prefix . '_disp';
-            $where[] = "disposition = {$p}";
-            $params[$p] = $disp;
+            $where[] = "disposition = :disp";
+            $params[':disp'] = $disp;
         }
     }
 
-    $minDur = trim((string)($filters['mindur'] ?? ''));
-    if ($minDur !== '' && ctype_digit($minDur)) {
-        $p = ':' . $prefix . '_mindur';
-        $where[] = "billsec >= {$p}";
-        $params[$p] = (int)$minDur;
+    $mindur = (string)($filters['mindur'] ?? '');
+    if ($mindur !== '') {
+        $where[] = "billsec >= :mindur";
+        $params[':mindur'] = (int)$mindur;
+    }
+
+    $q = (string)($filters['q'] ?? '');
+    if ($q !== '') {
+        $where[] = "(src LIKE :q1 OR dst LIKE :q2 OR clid LIKE :q3 OR uniqueid LIKE :q4 OR channel LIKE :q5 OR dstchannel LIKE :q6)";
+        $like = '%' . $q . '%';
+        $params[':q1'] = $like;
+        $params[':q2'] = $like;
+        $params[':q3'] = $like;
+        $params[':q4'] = $like;
+        $params[':q5'] = $like;
+        $params[':q6'] = $like;
+    }
+
+    // Preset filtering (simple leg-level logic)
+    $preset = strtolower(trim((string)($filters['preset'] ?? '')));
+    $gateway = trim((string)($filters['gateway'] ?? ''));
+
+    if ($preset !== '' && $preset !== 'all' && $gateway !== '') {
+        // Build gateway pattern (normalize gateway string)
+        $gwPattern = str_replace("\0", '', $gateway);
+        $gwPattern = rtrim($gwPattern, '%');
+        $gwPattern = rtrim($gwPattern, '-');
+
+        if ($gwPattern !== '') {
+            $gwPattern = $gwPattern . '-%';
+
+            if ($preset === 'inbound') {
+                // Inbound: calls FROM gateway (source)
+                $where[] = "channel LIKE :gw_preset";
+                $params[':gw_preset'] = $gwPattern;
+            } elseif ($preset === 'outbound') {
+                // Outbound: calls TO gateway (destination)
+                $where[] = "dstchannel LIKE :gw_preset";
+                $params[':gw_preset'] = $gwPattern;
+            } elseif ($preset === 'missed') {
+                // Missed: ALL missed calls involving gateway (inbound OR outbound)
+                $where[] = "(channel LIKE :gw_preset_ch OR dstchannel LIKE :gw_preset_dch)";
+                $where[] = "disposition IN ('NO ANSWER', 'NOANSWER')";
+                $params[':gw_preset_ch'] = $gwPattern;
+                $params[':gw_preset_dch'] = $gwPattern;
+            } elseif ($preset === 'missed_in') {
+                // Missed inbound: calls FROM gateway (source) with NO ANSWER
+                $where[] = "channel LIKE :gw_preset";
+                $where[] = "disposition IN ('NO ANSWER', 'NOANSWER')";
+                $params[':gw_preset'] = $gwPattern;
+            } elseif ($preset === 'missed_out') {
+                // Missed outbound: calls TO gateway (destination) with NO ANSWER
+                $where[] = "dstchannel LIKE :gw_preset";
+                $where[] = "disposition IN ('NO ANSWER', 'NOANSWER')";
+                $params[':gw_preset'] = $gwPattern;
+            } elseif ($preset === 'internal') {
+                // Internal: exclude gateway calls (both source and destination)
+                $where[] = "channel NOT LIKE :gw_preset_ch";
+                $where[] = "dstchannel NOT LIKE :gw_preset_dch";
+                $params[':gw_preset_ch'] = $gwPattern;
+                $params[':gw_preset_dch'] = $gwPattern;
+            }
+        }
     }
 
     return implode(' AND ', $where);
 }
 
-/**
- * Group-level preset filter; uses its own legWhere (w2_) for first-leg subquery.
- */
-function buildPresetGroupWhere(
-    string $preset,
-    string $gateway,
-    array $allowedExts,
-    string $cdrTable,
-    string $legWhereForFirstLeg,
-    array &$params
-): string {
-    $preset = strtolower(trim($preset));
-    if ($preset === '') return "1=1";
+function fetchSummary(array $CONFIG, PDO $pdo, array $me, array $filters): array {
+    $params = [];
+    $whereSql = buildWhere($CONFIG, $me, $filters, $params);
+    $cdrTable = $CONFIG['cdrTable'];
 
-    $grp = grpKeySql();
-
-    $firstLegSub = "
-        SELECT g.grpkey, MIN(g.calldate) AS first_calldate
-        FROM (
-            SELECT {$grp} AS grpkey, calldate
-            FROM `{$cdrTable}`
-            WHERE {$legWhereForFirstLeg}
-        ) g
-        GROUP BY g.grpkey
+    $sumSql = "
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN disposition='ANSWERED' THEN 1 ELSE 0 END) AS answered,
+      SUM(CASE WHEN disposition='BUSY' THEN 1 ELSE 0 END) AS busy,
+      SUM(CASE WHEN disposition IN ('NO ANSWER','NOANSWER') THEN 1 ELSE 0 END) AS noanswer,
+      SUM(CASE WHEN disposition='FAILED' THEN 1 ELSE 0 END) AS failed,
+      SUM(CASE WHEN disposition IN ('CONGESTION','CONGESTED') THEN 1 ELSE 0 END) AS congested,
+      SUM(billsec) AS total_billsec
+    FROM `{$cdrTable}`
+    WHERE {$whereSql}
     ";
 
-    $gwClauseFirst = buildGatewayClause($gateway, $params, 'gw_first');
-    $gwClauseAny   = buildGatewayClause($gateway, $params, 'gw_any');
-
-    $answeredAny = "
-        EXISTS (
-            SELECT 1 FROM `{$cdrTable}` a
-            WHERE {$grp} = grp.grpkey
-              AND a.disposition = 'ANSWERED'
-        )
-    ";
-
-    $firstIsGateway = "
-        EXISTS (
-            SELECT 1
-            FROM ({$firstLegSub}) fl
-            JOIN `{$cdrTable}` f ON {$grp} = fl.grpkey AND f.calldate = fl.first_calldate
-            WHERE fl.grpkey = grp.grpkey
-              AND ({$gwClauseFirst})
-        )
-    ";
-
-    $extParams = [];
-    $firstIsExtClause = buildAllowedExtLikeClauses($allowedExts, $extParams, 'firstext');
-    foreach ($extParams as $k => $v) $params[$k] = $v;
-
-    $firstIsExt = "
-        EXISTS (
-            SELECT 1
-            FROM ({$firstLegSub}) fl
-            JOIN `{$cdrTable}` f ON {$grp} = fl.grpkey AND f.calldate = fl.first_calldate
-            WHERE fl.grpkey = grp.grpkey
-              AND {$firstIsExtClause}
-        )
-    ";
-
-    $groupHasGatewayAny = "
-        EXISTS (
-            SELECT 1 FROM `{$cdrTable}` g2
-            WHERE {$grp} = grp.grpkey
-              AND ({$gwClauseAny})
-        )
-    ";
-
-    if ($preset === 'inbound')  return "({$firstIsGateway})";
-    if ($preset === 'outbound') return "({$firstIsExt} AND {$groupHasGatewayAny})";
-    if ($preset === 'missed')   return "({$firstIsGateway} AND NOT {$answeredAny})";
-
-    return "1=1";
+    $st = $pdo->prepare($sumSql);
+    foreach ($params as $k => $v) {
+        if (is_int($v)) {
+            $st->bindValue($k, $v, PDO::PARAM_INT);
+        } else {
+            $st->bindValue($k, (string)$v, PDO::PARAM_STR);
+        }
+    }
+    $st->execute();
+    return $st->fetch() ?: ['total'=>0,'answered'=>0,'busy'=>0,'noanswer'=>0,'failed'=>0,'congested'=>0,'total_billsec'=>0];
 }
 
-/**
- * Summary for group=call
- */
-function fetchSummary(PDO $pdo, array $filters, array $acl, array $allowedExts, string $cdrTable): array {
+function fetchPageRows(array $CONFIG, PDO $pdo, array $me, array $filters): array {
     $params = [];
+    $whereSql = buildWhere($CONFIG, $me, $filters, $params);
+    $cdrTable = $CONFIG['cdrTable'];
 
-    $legWhereMain     = buildLegWhere($filters, $acl, $params, 'w1');
-    $legWhereFirstLeg = buildLegWhere($filters, $acl, $params, 'w2');
+    $sort = (string)($filters['sort'] ?? 'calldate');
+    $dir  = (string)($filters['dir'] ?? 'desc');
 
-    $preset  = (string)($filters['preset'] ?? '');
-    $gateway = (string)($filters['gateway'] ?? '');
-    $presetGroupWhere = buildPresetGroupWhere($preset, $gateway, $allowedExts, $cdrTable, $legWhereFirstLeg, $params);
-
-    $grp = grpKeySql();
-
-    $sql = "
-        SELECT
-          COUNT(*) AS total_groups,
-          SUM(CASE WHEN grp.answered_any = 1 THEN 1 ELSE 0 END) AS answered_groups,
-          SUM(CASE WHEN grp.answered_any = 0 THEN 1 ELSE 0 END) AS missed_groups,
-          SUM(grp.total_billsec) AS total_billsec
-        FROM (
-          SELECT
-            {$grp} AS grpkey,
-            MAX(CASE WHEN disposition='ANSWERED' THEN 1 ELSE 0 END) AS answered_any,
-            SUM(billsec) AS total_billsec
-          FROM `{$cdrTable}`
-          WHERE {$legWhereMain}
-          GROUP BY {$grp}
-        ) grp
-        WHERE {$presetGroupWhere}
-    ";
-
-    requireBindAll($sql, $params);
-    $st = prepareBindExecute($pdo, $sql, $params);
-    $r = $st->fetch(PDO::FETCH_ASSOC) ?: [];
-
-    return [
-        'total' => (int)($r['total_groups'] ?? 0),
-        'answered' => (int)($r['answered_groups'] ?? 0),
-        'missed' => (int)($r['missed_groups'] ?? 0),
-        'total_billsec' => (int)($r['total_billsec'] ?? 0),
-    ];
-}
-
-function countGroups(PDO $pdo, array $filters, array $acl, array $allowedExts, string $cdrTable): int {
-    $params = [];
-
-    $legWhereMain     = buildLegWhere($filters, $acl, $params, 'w1');
-    $legWhereFirstLeg = buildLegWhere($filters, $acl, $params, 'w2');
-
-    $preset  = (string)($filters['preset'] ?? '');
-    $gateway = (string)($filters['gateway'] ?? '');
-    $presetGroupWhere = buildPresetGroupWhere($preset, $gateway, $allowedExts, $cdrTable, $legWhereFirstLeg, $params);
-
-    $grp = grpKeySql();
-
-    $sql = "
-      SELECT COUNT(*) AS c
-      FROM (
-        SELECT {$grp} AS grpkey
-        FROM `{$cdrTable}`
-        WHERE {$legWhereMain}
-        GROUP BY {$grp}
-      ) grp
-      WHERE {$presetGroupWhere}
-    ";
-
-    requireBindAll($sql, $params);
-    $st = prepareBindExecute($pdo, $sql, $params);
-    $r = $st->fetch(PDO::FETCH_ASSOC) ?: [];
-    return (int)($r['c'] ?? 0);
-}
-
-function fetchPageRows(PDO $pdo, array $filters, array $acl, array $allowedExts, string $cdrTable): array {
-    $params = [];
-
-    $legWhereMain     = buildLegWhere($filters, $acl, $params, 'w1');
-    $legWhereFirstLeg = buildLegWhere($filters, $acl, $params, 'w2');
-
-    $preset  = (string)($filters['preset'] ?? '');
-    $gateway = (string)($filters['gateway'] ?? '');
-    $presetGroupWhere = buildPresetGroupWhere($preset, $gateway, $allowedExts, $cdrTable, $legWhereFirstLeg, $params);
-
-    $grp = grpKeySql();
-
-    $pageNo = max(1, (int)($filters['page'] ?? 1));
+    $pageNo = (int)($filters['page'] ?? 1);
     $per    = (int)($filters['per'] ?? 50);
-    if ($per < 10) $per = 10;
-    if ($per > 200) $per = 200;
     $offset = ($pageNo - 1) * $per;
 
-    $sort = (string)($filters['sort'] ?? 'start_calldate');
-    $dir  = strtolower((string)($filters['dir'] ?? 'desc')) === 'asc' ? 'asc' : 'desc';
-    $allowedSort = ['start_calldate','src','dst','status','total_billsec','legs'];
-    if (!in_array($sort, $allowedSort, true)) $sort = 'start_calldate';
-
     $sql = "
-      SELECT
-        grp.grpkey,
-        grp.start_calldate,
-        grp.clid,
-        grp.src,
-        grp.dst,
-        grp.channel,
-        grp.dstchannel,
-        CASE WHEN grp.answered_any=1 THEN 'ANSWERED' ELSE 'MISSED' END AS status,
-        grp.total_billsec,
-        grp.legs
-      FROM (
-        SELECT
-          {$grp} AS grpkey,
-          MIN(calldate) AS start_calldate,
-          SUBSTRING_INDEX(GROUP_CONCAT(clid ORDER BY calldate ASC SEPARATOR '\n'), '\n', 1) AS clid,
-          SUBSTRING_INDEX(GROUP_CONCAT(src ORDER BY calldate ASC SEPARATOR '\n'), '\n', 1) AS src,
-          SUBSTRING_INDEX(GROUP_CONCAT(dst ORDER BY calldate ASC SEPARATOR '\n'), '\n', 1) AS dst,
-          SUBSTRING_INDEX(GROUP_CONCAT(channel ORDER BY calldate ASC SEPARATOR '\n'), '\n', 1) AS channel,
-          SUBSTRING_INDEX(GROUP_CONCAT(dstchannel ORDER BY calldate ASC SEPARATOR '\n'), '\n', 1) AS dstchannel,
-          MAX(CASE WHEN disposition='ANSWERED' THEN 1 ELSE 0 END) AS answered_any,
-          SUM(billsec) AS total_billsec,
-          COUNT(*) AS legs
-        FROM `{$cdrTable}`
-        WHERE {$legWhereMain}
-        GROUP BY {$grp}
-      ) grp
-      WHERE {$presetGroupWhere}
-      ORDER BY {$sort} {$dir}
-      LIMIT :lim OFFSET :off
+    SELECT calldate, clid, src, dst, channel, dstchannel, dcontext, disposition, duration, billsec, uniqueid, recordingfile
+    FROM `{$cdrTable}`
+    WHERE {$whereSql}
+    ORDER BY {$sort} {$dir}
+    LIMIT :lim OFFSET :off
     ";
 
-    $params[':lim'] = (int)$per;
-    $params[':off'] = (int)$offset;
-
-    requireBindAll($sql, $params);
-    $st = prepareBindExecute($pdo, $sql, $params);
-    return $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $st = $pdo->prepare($sql);
+    foreach ($params as $k => $v) {
+        if (is_int($v)) {
+            $st->bindValue($k, $v, PDO::PARAM_INT);
+        } else {
+            $st->bindValue($k, (string)$v, PDO::PARAM_STR);
+        }
+    }
+    $st->bindValue(':lim', $per, PDO::PARAM_INT);
+    $st->bindValue(':off', $offset, PDO::PARAM_INT);
+    $st->execute();
+    return $st->fetchAll() ?: [];
 }
 
-function fetchTransitions(PDO $pdo, string $grpkey, array $filters, array $acl, string $cdrTable): array {
-    $grpkey = trim($grpkey);
-    if ($grpkey === '') return [];
-
-    $params = [':grpkey' => $grpkey];
-    $legWhere = buildLegWhere($filters, $acl, $params, 'w1');
-
-    $grp = grpKeySql();
-
-    $sql = "
-      SELECT calldate, src, dst, channel, dstchannel, disposition, billsec, uniqueid, recordingfile
-      FROM `{$cdrTable}`
-      WHERE {$legWhere}
-        AND {$grp} = :grpkey
-      ORDER BY calldate ASC
-    ";
-
-    requireBindAll($sql, $params);
-    $st = prepareBindExecute($pdo, $sql, $params);
-    return $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
-}
-
-function fetchByExtension(PDO $pdo, array $filters, array $acl, array $allowedExts, string $cdrTable): array {
+function streamCsv(array $CONFIG, PDO $pdo, array $me, array $filters): void {
     $params = [];
+    $whereSql = buildWhere($CONFIG, $me, $filters, $params);
+    $cdrTable = $CONFIG['cdrTable'];
 
-    $legWhereMain     = buildLegWhere($filters, $acl, $params, 'w1');
-    $legWhereFirstLeg = buildLegWhere($filters, $acl, $params, 'w2');
+    $sort = (string)($filters['sort'] ?? 'calldate');
+    $dir  = (string)($filters['dir'] ?? 'desc');
 
-    $preset  = (string)($filters['preset'] ?? '');
-    $gateway = (string)($filters['gateway'] ?? '');
-    $presetGroupWhere = buildPresetGroupWhere($preset, $gateway, $allowedExts, $cdrTable, $legWhereFirstLeg, $params);
+    $from = (string)$filters['from'];
+    $to   = (string)$filters['to'];
 
-    $pageNo = max(1, (int)($filters['page'] ?? 1));
-    $per    = (int)($filters['per'] ?? 50);
-    if ($per < 10) $per = 10;
-    if ($per > 200) $per = 200;
-    $offset = ($pageNo - 1) * $per;
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="cdr_'.$from.'_to_'.$to.'.csv"');
 
-    $grp = grpKeySql();
+    echo csvRow(['calldate','clid','src','dst','channel','dstchannel','dcontext','disposition','duration','billsec','uniqueid','recordingfile']);
 
-    $extParams = [];
-    $extClause = buildAllowedExtLikeClauses($allowedExts, $extParams, 'anyext');
-    foreach ($extParams as $k => $v) $params[$k] = $v;
-
-    $extractExtExpr = "
-        CASE
-          WHEN f.channel LIKE 'PJSIP/%' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(f.channel,'/',-1),'-',1)
-          WHEN f.channel LIKE 'SIP/%'   THEN SUBSTRING_INDEX(SUBSTRING_INDEX(f.channel,'/',-1),'-',1)
-          WHEN f.channel LIKE 'Local/%' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(f.channel,'/',-1),'@',1)
-          WHEN f.dstchannel LIKE 'PJSIP/%' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(f.dstchannel,'/',-1),'-',1)
-          WHEN f.dstchannel LIKE 'SIP/%'   THEN SUBSTRING_INDEX(SUBSTRING_INDEX(f.dstchannel,'/',-1),'-',1)
-          WHEN f.dstchannel LIKE 'Local/%' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(f.dstchannel,'/',-1),'@',1)
-          ELSE ''
-        END
+    $csvSql = "
+    SELECT calldate, clid, src, dst, channel, dstchannel, dcontext, disposition, duration, billsec, uniqueid, recordingfile
+    FROM `{$cdrTable}`
+    WHERE {$whereSql}
+    ORDER BY {$sort} {$dir}
     ";
 
-    $sql = "
-      SELECT
-        x.ext,
-        MAX(x.start_calldate) AS last_calldate,
-        COUNT(*) AS calls,
-        SUM(CASE WHEN x.answered_any=1 THEN 1 ELSE 0 END) AS answered_calls,
-        SUM(CASE WHEN x.answered_any=0 THEN 1 ELSE 0 END) AS missed_calls,
-        SUM(x.total_billsec) AS total_billsec
-      FROM (
-        SELECT
-          grp.grpkey,
-          grp.start_calldate,
-          grp.answered_any,
-          grp.total_billsec,
-          (
-            SELECT {$extractExtExpr}
-            FROM `{$cdrTable}` f
-            WHERE {$grp} = grp.grpkey
-              AND {$extClause}
-            ORDER BY f.calldate ASC
-            LIMIT 1
-          ) AS ext
-        FROM (
-          SELECT
-            {$grp} AS grpkey,
-            MIN(calldate) AS start_calldate,
-            MAX(CASE WHEN disposition='ANSWERED' THEN 1 ELSE 0 END) AS answered_any,
-            SUM(billsec) AS total_billsec
-          FROM `{$cdrTable}`
-          WHERE {$legWhereMain}
-          GROUP BY {$grp}
-        ) grp
-        WHERE {$presetGroupWhere}
-      ) x
-      WHERE x.ext <> ''
-      GROUP BY x.ext
-      ORDER BY calls DESC, last_calldate DESC
-      LIMIT :lim OFFSET :off
-    ";
-
-    $params[':lim'] = (int)$per;
-    $params[':off'] = (int)$offset;
-
-    requireBindAll($sql, $params);
-    $st = prepareBindExecute($pdo, $sql, $params);
-    return $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $st = $pdo->prepare($csvSql);
+    foreach ($params as $k => $v) {
+        if (is_int($v)) {
+            $st->bindValue($k, $v, PDO::PARAM_INT);
+        } else {
+            $st->bindValue($k, (string)$v, PDO::PARAM_STR);
+        }
+    }
+    $st->execute();
+    while ($r = $st->fetch()) {
+        echo csvRow([
+            $r['calldate'] ?? '',
+            $r['clid'] ?? '',
+            $r['src'] ?? '',
+            $r['dst'] ?? '',
+            $r['channel'] ?? '',
+            $r['dstchannel'] ?? '',
+            $r['dcontext'] ?? '',
+            $r['disposition'] ?? '',
+            $r['duration'] ?? '',
+            $r['billsec'] ?? '',
+            $r['uniqueid'] ?? '',
+            $r['recordingfile'] ?? '',
+        ]);
+    }
+    exit;
 }
 
-function countExtensions(PDO $pdo, array $filters, array $acl, array $allowedExts, string $cdrTable): int {
-    $params = [];
+function handleRecordingRequest(array $CONFIG, PDO $pdo, array $me, string $action): void {
+    $uid = (string)getParam('uid', '');
+    if ($uid === '') fail("Missing uid", 400);
 
-    $legWhereMain     = buildLegWhere($filters, $acl, $params, 'w1');
-    $legWhereFirstLeg = buildLegWhere($filters, $acl, $params, 'w2');
+    $cdrTable = $CONFIG['cdrTable'];
 
-    $preset  = (string)($filters['preset'] ?? '');
-    $gateway = (string)($filters['gateway'] ?? '');
-    $presetGroupWhere = buildPresetGroupWhere($preset, $gateway, $allowedExts, $cdrTable, $legWhereFirstLeg, $params);
+    $st = $pdo->prepare("SELECT calldate, channel, dstchannel, recordingfile FROM `{$cdrTable}` WHERE uniqueid = :uid LIMIT 1");
+    $st->execute([':uid' => $uid]);
+    $row = $st->fetch();
+    if (!$row) { http_response_code(404); echo "Not found\n"; exit; }
 
-    $grp = grpKeySql();
+    if (empty($me['is_admin'])) {
+        $allowedExts = (array)($me['extensions'] ?? []);
+        $ch  = (string)($row['channel'] ?? '');
+        $dch = (string)($row['dstchannel'] ?? '');
+        if (!rowAllowedByChannel($allowedExts, $ch, $dch)) {
+            http_response_code(403);
+            echo "Forbidden\n";
+            exit;
+        }
+    }
 
-    $extParams = [];
-    $extClause = buildAllowedExtLikeClauses($allowedExts, $extParams, 'cnt_ext');
-    foreach ($extParams as $k => $v) $params[$k] = $v;
+    $abs = findRecordingFile($CONFIG['recBaseDir'], $row['recordingfile'] ?? null, $row['calldate'] ?? null);
+    if (!$abs) { http_response_code(404); echo "Recording not found\n"; exit; }
 
-    $extractExtExpr = "
-        CASE
-          WHEN f.channel LIKE 'PJSIP/%' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(f.channel,'/',-1),'-',1)
-          WHEN f.channel LIKE 'SIP/%'   THEN SUBSTRING_INDEX(SUBSTRING_INDEX(f.channel,'/',-1),'-',1)
-          WHEN f.channel LIKE 'Local/%' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(f.channel,'/',-1),'@',1)
-          WHEN f.dstchannel LIKE 'PJSIP/%' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(f.dstchannel,'/',-1),'-',1)
-          WHEN f.dstchannel LIKE 'SIP/%'   THEN SUBSTRING_INDEX(SUBSTRING_INDEX(f.dstchannel,'/',-1),'-',1)
-          WHEN f.dstchannel LIKE 'Local/%' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(f.dstchannel,'/',-1),'@',1)
-          ELSE ''
-        END
-    ";
-
-    $sql = "
-      SELECT COUNT(*) AS c
-      FROM (
-        SELECT
-          (
-            SELECT {$extractExtExpr}
-            FROM `{$cdrTable}` f
-            WHERE {$grp} = grp.grpkey
-              AND {$extClause}
-            ORDER BY f.calldate ASC
-            LIMIT 1
-          ) AS ext
-        FROM (
-          SELECT {$grp} AS grpkey
-          FROM `{$cdrTable}`
-          WHERE {$legWhereMain}
-          GROUP BY {$grp}
-        ) grp
-        WHERE {$presetGroupWhere}
-      ) x
-      WHERE x.ext <> ''
-      GROUP BY x.ext
-    ";
-
-    requireBindAll($sql, $params);
-    $st = prepareBindExecute($pdo, $sql, $params);
-    $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
-    return count($rows);
+    streamFile($abs, $action === 'download' ? 'attachment' : 'inline');
 }
 
-function fetchLegByUniqueid(PDO $pdo, string $uniqueid, array $filters, array $acl, string $cdrTable): ?array {
-    $uniqueid = trim($uniqueid);
-    if ($uniqueid === '') return null;
+function fetchGateways(array $CONFIG, PDO $pdo): array {
+    $cdrTable = $CONFIG['cdrTable'];
 
-    $params = [':uid' => $uniqueid];
-    $legWhere = buildLegWhere($filters, $acl, $params, 'w1');
-
+    // Get unique channel prefixes (gateway names)
     $sql = "
-      SELECT calldate, uniqueid, recordingfile
-      FROM `{$cdrTable}`
-      WHERE {$legWhere}
-        AND uniqueid = :uid
-      ORDER BY calldate DESC
-      LIMIT 1
+    SELECT DISTINCT
+        SUBSTRING_INDEX(SUBSTRING_INDEX(channel, '/', 2), '/', -1) AS gateway
+    FROM `{$cdrTable}`
+    WHERE channel LIKE 'SIP/%' OR channel LIKE 'PJSIP/%' OR channel LIKE 'DAHDI/%' OR channel LIKE 'IAX2/%'
+    UNION
+    SELECT DISTINCT
+        SUBSTRING_INDEX(SUBSTRING_INDEX(dstchannel, '/', 2), '/', -1) AS gateway
+    FROM `{$cdrTable}`
+    WHERE dstchannel LIKE 'SIP/%' OR dstchannel LIKE 'PJSIP/%' OR dstchannel LIKE 'DAHDI/%' OR dstchannel LIKE 'IAX2/%'
+    ORDER BY gateway
+    LIMIT 100
     ";
 
-    requireBindAll($sql, $params);
-    $st = prepareBindExecute($pdo, $sql, $params);
-    $r = $st->fetch(PDO::FETCH_ASSOC);
-    return $r ?: null;
+    try {
+        $st = $pdo->query($sql);
+        $gateways = [];
+        while ($row = $st->fetch()) {
+            $gw = trim((string)($row['gateway'] ?? ''));
+            if ($gw !== '' && !in_array($gw, $gateways, true)) {
+                $gateways[] = $gw;
+            }
+        }
+        return $gateways;
+    } catch (Throwable $e) {
+        return [];
+    }
 }
 

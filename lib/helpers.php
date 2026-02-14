@@ -1,12 +1,6 @@
 <?php
 declare(strict_types=1);
 
-namespace Supervisor\Lib;
-
-/**
- * Common helpers used across the app.
- */
-
 function fail(string $msg, int $code = 500): void {
     http_response_code($code);
     header('Content-Type: text/plain; charset=utf-8');
@@ -31,6 +25,9 @@ function isValidDate(string $d): bool {
     $p = explode('-', $d);
     return checkdate((int)$p[1], (int)$p[2], (int)$p[0]);
 }
+
+function fmtFromTableStyle(string $ymd): string { return $ymd . ' 00:00:00'; }
+function fmtToTableStyle(string $ymd): string { return $ymd . ' 23:59:59'; }
 
 function csvRow(array $fields): string {
     $out = [];
@@ -72,5 +69,27 @@ function fmtTime(int $sec): string {
     $m = (int)floor(($sec % 3600) / 60);
     $s = $sec % 60;
     return ($h > 0) ? sprintf('%02d:%02d:%02d', $h, $m, $s) : sprintf('%02d:%02d', $m, $s);
+}
+
+function sortLink(string $col, string $label, string $currentSort, string $currentDir): string {
+    $dir = 'asc';
+    if ($currentSort === $col && $currentDir === 'asc') $dir = 'desc';
+    $arrow = ($currentSort === $col) ? ($currentDir === 'asc' ? ' ▲' : ' ▼') : '';
+    return '<a href="' . h(buildUrl(['sort'=>$col,'dir'=>$dir,'page'=>1])) . '">' . h($label . $arrow) . '</a>';
+}
+
+function startSecureSession(): void {
+    if (session_status() === PHP_SESSION_ACTIVE) return;
+
+    $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        || (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
+
+    session_set_cookie_params([
+        'httponly' => true,
+        'secure'   => $secure,
+        'samesite' => 'Lax',
+        'path'     => '/',
+    ]);
+    session_start();
 }
 

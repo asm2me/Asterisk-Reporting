@@ -1,8 +1,6 @@
 <?php
 declare(strict_types=1);
 
-namespace Supervisor\Lib;
-
 /**
  * Recording helpers (secure path resolve + HTTP Range streaming)
  */
@@ -26,20 +24,17 @@ function findRecordingFile(string $baseDir, ?string $recordingfile, ?string $cal
 
     $baseDir = rtrim($baseDir, '/');
 
-    // Absolute path: allow only inside baseDir
     if ($recordingfile[0] === '/') {
         $real = realpath($recordingfile);
         if ($real && strpos($real, $baseDir . '/') === 0 && is_file($real)) return $real;
         return null;
     }
 
-    // Relative path under baseDir
     $rel = sanitizeRelativePath($recordingfile);
     $try = $baseDir . '/' . $rel;
     $real = realpath($try);
     if ($real && strpos($real, $baseDir . '/') === 0 && is_file($real)) return $real;
 
-    // Common Asterisk monitor layout: YYYY/MM/DD/<file>
     if ($calldate && preg_match('/^\d{4}-\d{2}-\d{2}/', $calldate)) {
         $yyyy = substr($calldate, 0, 4);
         $mm   = substr($calldate, 5, 2);
@@ -57,7 +52,7 @@ function findRecordingFile(string $baseDir, ?string $recordingfile, ?string $cal
     return null;
 }
 
-function streamFile(string $absPath, string $mode = 'inline'): void {
+function streamFile(string $absPath, string $mode): void {
     $ext = strtolower(pathinfo($absPath, PATHINFO_EXTENSION));
     $mime = 'application/octet-stream';
     if ($ext === 'wav') $mime = 'audio/wav';

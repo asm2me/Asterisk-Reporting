@@ -1,160 +1,170 @@
 <?php
-declare(strict_types=1);
-/**
- * Admin User Management UI
- *
- * Expected variables from handleUsersPage():
- * @var array  $usersData
- * @var array  $me
- * @var string $csrf
- * @var string $msg
- * @var string $editUser
- * @var array|null $edit
- */
+use function h;
+/** @var array $USERS_DATA */
+/** @var array $ME */
+/** @var string $CSRF */
+/** @var string $MSG */
+/** @var string $EDIT_USER */
+/** @var array|null $EDIT_REC */
 ?>
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Supervisor CDR - User Management</title>
+  <title>User Management - Supervisor CDR</title>
   <style>
-    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;background:#0b1220;color:#e8eefc}
-    .wrap{max-width:1050px;margin:0 auto;padding:20px}
-    .top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
-    .card{background:rgba(15,26,48,.8);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:14px;margin-bottom:12px}
-    h1{margin:0 0 8px 0;font-size:18px}
-    .muted{color:#9fb0d0;font-size:12px}
-    table{width:100%;border-collapse:collapse;margin-top:10px}
-    th,td{border-bottom:1px solid rgba(255,255,255,.08);padding:10px;font-size:13px;text-align:left;vertical-align:top}
-    input,textarea,select{width:100%;box-sizing:border-box;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10);color:#e8eefc;border-radius:10px;padding:10px;font-size:13px}
-    textarea{min-height:48px}
-    .btn{display:inline-block;background:rgba(122,162,255,.14);border:1px solid rgba(122,162,255,.25);color:#e8eefc;padding:10px 12px;border-radius:12px;text-decoration:none}
-    .btn.danger{background:rgba(255,107,122,.14);border-color:rgba(255,107,122,.25)}
-    button{background:rgba(68,209,157,.14);border:1px solid rgba(68,209,157,.25);color:#e8eefc;padding:10px 12px;border-radius:12px;cursor:pointer}
-    button.danger{background:rgba(255,107,122,.14);border-color:rgba(255,107,122,.25)}
-    .mini{padding:7px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.06);color:#e8eefc;text-decoration:none;font-size:12px}
-    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-    @media(max-width:900px){.grid2{grid-template-columns:1fr}}
-    .msg{margin-top:10px;font-size:13px}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;background:#0b1220;color:#e8eefc;padding:20px}
+    h1{font-size:24px;margin-bottom:20px}
+    .msg{padding:12px;background:rgba(68,209,157,.14);border:1px solid rgba(68,209,157,.25);border-radius:8px;margin-bottom:20px}
+    .err{padding:12px;background:rgba(255,107,122,.14);border:1px solid rgba(255,107,122,.25);border-radius:8px;margin-bottom:20px}
+    table{width:100%;border-collapse:collapse;background:rgba(15,26,48,.8);border:1px solid rgba(255,255,255,.08);border-radius:8px;overflow:hidden}
+    th,td{padding:12px;text-align:left;border-bottom:1px solid rgba(255,255,255,.08)}
+    th{background:rgba(255,255,255,.05);font-weight:600}
+    tr:last-child td{border-bottom:none}
+    a{color:#44d19d;text-decoration:none}
+    a:hover{text-decoration:underline}
+    .btn{display:inline-block;padding:8px 16px;background:rgba(68,209,157,.14);border:1px solid rgba(68,209,157,.25);color:#e8eefc;border-radius:8px;cursor:pointer;text-decoration:none;font-size:13px}
+    .btn:hover{background:rgba(68,209,157,.20)}
+    .btn-danger{background:rgba(255,107,122,.14);border:1px solid rgba(255,107,122,.25)}
+    .btn-danger:hover{background:rgba(255,107,122,.20)}
+    .form-card{background:rgba(15,26,48,.8);border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:20px;margin-bottom:20px}
+    label{display:block;margin-top:12px;font-size:13px;color:#9fb0d0}
+    input,select{width:100%;box-sizing:border-box;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10);color:#e8eefc;border-radius:6px;padding:8px;font-size:13px;margin-top:4px}
+    button{margin-top:12px;background:rgba(68,209,157,.14);border:1px solid rgba(68,209,157,.25);color:#e8eefc;padding:10px 16px;border-radius:8px;cursor:pointer;font-size:13px}
+    .form-actions{margin-top:16px;display:flex;gap:10px}
+    .back-link{display:inline-block;margin-bottom:20px}
   </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="top">
-    <div>
-      <h1>User Management</h1>
-      <div class="muted">
-        Only <b>admin</b> users can access this page. Logged in as <b><?= h((string)$me['username']) ?></b>.
-      </div>
-      <?php if (!empty($msg)): ?>
-        <div class="msg"><b><?= h($msg) ?></b></div>
-      <?php endif; ?>
-    </div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;">
-      <a class="btn" href="<?= h(buildUrl(['page'=>null,'edit'=>null])) ?>">← Back to report</a>
-      <a class="btn danger" href="<?= h(buildUrl(['action'=>'logout','page'=>null,'edit'=>null])) ?>">🚪 Logout</a>
-    </div>
-  </div>
+  <a href="index2.php" class="back-link">← Back to Report</a>
+  <h1>User Management</h1>
 
-  <div class="grid2">
-    <div class="card">
-      <b><?= $edit ? ('Edit User: ' . h($editUser)) : 'Add User' ?></b>
-      <div class="muted" style="margin-top:6px;">Extensions: comma/space separated digits (e.g. 1000,1001).</div>
+  <?php if ($MSG !== ''): ?>
+    <div class="msg"><?= h($MSG) ?></div>
+  <?php endif; ?>
 
-      <form method="post" style="margin-top:10px;">
-        <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-        <input type="hidden" name="uaction" value="<?= $edit ? 'update' : 'add' ?>">
+  <?php if ($EDIT_USER !== ''): ?>
+    <!-- Edit/Update User Form -->
+    <div class="form-card">
+      <h2 style="margin-top:0">Edit User: <?= h($EDIT_USER) ?></h2>
+      <form method="post">
+        <input type="hidden" name="csrf" value="<?= h($CSRF) ?>">
+        <input type="hidden" name="username" value="<?= h($EDIT_USER) ?>">
 
-        <label class="muted">Username</label>
-        <input name="username" <?= $edit ? 'readonly' : '' ?> value="<?= h($editUser) ?>" placeholder="agent1">
-
-        <div style="height:10px"></div>
-
-        <label class="muted">Allowed Extensions</label>
-        <textarea name="extensions" placeholder="1000,1001"><?= h($edit ? implode(', ', (array)($edit['extensions'] ?? [])) : '') ?></textarea>
-
-        <div style="height:10px"></div>
-
-        <label class="muted">
-          <input type="checkbox" name="is_admin" value="1" <?= ($edit && !empty($edit['is_admin'])) ? 'checked' : '' ?>>
+        <label>
           Admin
+          <select name="is_admin">
+            <option value="0" <?= empty($EDIT_REC['is_admin']) ? 'selected' : '' ?>>No</option>
+            <option value="1" <?= !empty($EDIT_REC['is_admin']) ? 'selected' : '' ?>>Yes</option>
+          </select>
         </label>
 
-        <?php if (!$edit): ?>
-          <div style="height:10px"></div>
-          <label class="muted">Password</label>
-          <input type="password" name="newpass1" placeholder="new password">
-          <div style="height:8px"></div>
-          <label class="muted">Repeat Password</label>
-          <input type="password" name="newpass2" placeholder="repeat password">
-        <?php endif; ?>
+        <label>
+          Extensions (comma-separated)
+          <input name="extensions" value="<?= h(implode(',', $EDIT_REC['extensions'] ?? [])) ?>" placeholder="101,102,103">
+        </label>
 
-        <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
-          <button type="submit"><?= $edit ? 'Save Changes' : 'Add User' ?></button>
-          <?php if ($edit): ?>
-            <a class="mini" href="<?= h(buildUrl(['page'=>'users','edit'=>null])) ?>">Cancel</a>
-          <?php endif; ?>
+        <div class="form-actions">
+          <button type="submit" name="uaction" value="update">Update User</button>
+          <a href="?page=users" class="btn">Cancel</a>
         </div>
       </form>
 
-      <?php if ($edit): ?>
-        <div style="height:14px"></div>
-        <b>Change Password</b>
-        <form method="post" style="margin-top:10px;">
-          <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-          <input type="hidden" name="uaction" value="changepass">
-          <input type="hidden" name="username" value="<?= h($editUser) ?>">
+      <!-- Change Password Section -->
+      <hr style="margin:20px 0;border:none;border-top:1px solid rgba(255,255,255,.08)">
+      <h3>Change Password</h3>
+      <form method="post">
+        <input type="hidden" name="csrf" value="<?= h($CSRF) ?>">
+        <input type="hidden" name="username" value="<?= h($EDIT_USER) ?>">
 
-          <label class="muted">New Password</label>
-          <input type="password" name="newpass1" placeholder="new password">
-          <div style="height:8px"></div>
-          <label class="muted">Repeat New Password</label>
-          <input type="password" name="newpass2" placeholder="repeat new password">
+        <label>
+          New Password
+          <input type="password" name="newpass1" autocomplete="new-password" required>
+        </label>
 
-          <div style="margin-top:12px;">
-            <button type="submit">Change Password</button>
-          </div>
+        <label>
+          Confirm Password
+          <input type="password" name="newpass2" autocomplete="new-password" required>
+        </label>
+
+        <button type="submit" name="uaction" value="changepass">Change Password</button>
+      </form>
+
+      <?php if ($EDIT_USER !== 'admin'): ?>
+        <!-- Delete User Section -->
+        <hr style="margin:20px 0;border:none;border-top:1px solid rgba(255,255,255,.08)">
+        <h3>Delete User</h3>
+        <form method="post" onsubmit="return confirm('Are you sure you want to delete this user?')">
+          <input type="hidden" name="csrf" value="<?= h($CSRF) ?>">
+          <input type="hidden" name="username" value="<?= h($EDIT_USER) ?>">
+          <button type="submit" name="uaction" value="delete" class="btn-danger">Delete User</button>
         </form>
       <?php endif; ?>
     </div>
+  <?php else: ?>
+    <!-- Add New User Form -->
+    <div class="form-card">
+      <h2 style="margin-top:0">Add New User</h2>
+      <form method="post">
+        <input type="hidden" name="csrf" value="<?= h($CSRF) ?>">
 
-    <div class="card">
-      <b>Existing Users</b>
-      <table>
-        <thead>
-          <tr><th>User</th><th>Admin</th><th>Extensions</th><th>Actions</th></tr>
-        </thead>
-        <tbody>
-        <?php foreach (($usersData['users'] ?? []) as $u => $info): ?>
+        <label>
+          Username
+          <input name="username" placeholder="Username" autocomplete="off" required>
+        </label>
+
+        <label>
+          Password
+          <input type="password" name="newpass1" autocomplete="new-password" required>
+        </label>
+
+        <label>
+          Confirm Password
+          <input type="password" name="newpass2" autocomplete="new-password" required>
+        </label>
+
+        <label>
+          Admin
+          <select name="is_admin">
+            <option value="0">No</option>
+            <option value="1">Yes</option>
+          </select>
+        </label>
+
+        <label>
+          Extensions (comma-separated)
+          <input name="extensions" placeholder="101,102,103">
+        </label>
+
+        <button type="submit" name="uaction" value="add">Add User</button>
+      </form>
+    </div>
+
+    <!-- Users List -->
+    <h2>Existing Users</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Admin</th>
+          <th>Extensions</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <?php foreach ($USERS_DATA['users'] ?? [] as $username => $rec): ?>
           <tr>
-            <td><?= h((string)$u) ?></td>
-            <td><?= !empty($info['is_admin']) ? 'Yes' : 'No' ?></td>
-            <td class="muted"><?= h(implode(', ', (array)($info['extensions'] ?? []))) ?></td>
-            <td style="white-space:nowrap;">
-              <a class="mini" href="<?= h(buildUrl(['page'=>'users','edit'=>(string)$u])) ?>">Edit</a>
-              <?php if ((string)$u !== 'admin'): ?>
-                <form method="post" style="display:inline;">
-                  <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-                  <input type="hidden" name="uaction" value="delete">
-                  <input type="hidden" name="username" value="<?= h((string)$u) ?>">
-                  <button class="danger" type="submit" onclick="return confirm(<?= json_encode("Delete user {$u}?") ?>);">Delete</button>
-                </form>
-              <?php else: ?>
-                <span class="muted">protected</span>
-              <?php endif; ?>
+            <td><?= h($username) ?></td>
+            <td><?= !empty($rec['is_admin']) ? 'Yes' : 'No' ?></td>
+            <td><?= h(implode(', ', $rec['extensions'] ?? [])) ?></td>
+            <td>
+              <a href="?page=users&edit=<?= urlencode($username) ?>" class="btn">Edit</a>
             </td>
           </tr>
         <?php endforeach; ?>
-        </tbody>
-      </table>
-
-      <div class="muted" style="margin-top:10px;">
-        Tip: Edit a user to change their extensions or password.
-      </div>
-    </div>
-  </div>
-</div>
+      </tbody>
+    </table>
+  <?php endif; ?>
 </body>
 </html>
-
