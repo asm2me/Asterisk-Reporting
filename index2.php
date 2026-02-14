@@ -3,6 +3,9 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php'; // provides: $pdo, $me, $isAdmin, $allowedExts, $acl, $usersData, $settings
 
+// recording helpers + endpoint support
+require_once __DIR__ . '/lib/recordings.php';
+
 // --- small local CSV streamer (cannot be missing) ---
 function streamCsv(PDO $pdo, array $filters, array $acl, array $allowedExts, string $cdrTable): void {
     header('Content-Type: text/csv; charset=utf-8');
@@ -49,45 +52,7 @@ function streamCsv(PDO $pdo, array $filters, array $acl, array $allowedExts, str
 // --- actions ---
 $action = strtolower((string)($_GET['action'] ?? ''));
 
-// AJAX transitions endpoint
-if ($action === 'transitions') {
-    header('Content-Type: application/json; charset=utf-8');
-    $grpkey = trim((string)($_GET['grpkey'] ?? ''));
-    if ($grpkey === '') { echo json_encode(['ok'=>false,'error'=>'Missing grpkey']); exit; }
-
-    // keep date range the same as current filter so ACL/date applies
-    $from = (string)($_GET['from'] ?? date('Y-m-d'));
-    $to   = (string)($_GET['to'] ?? date('Y-m-d'));
-    $filtersTmp = [
-        'fromDt' => $from . ' 00:00:00',
-        'toDt'   => $to . ' 23:59:59',
-        'from'   => $from,
-        'to'     => $to,
-        'q'      => (string)($_GET['q'] ?? ''),
-        'src'    => (string)($_GET['src'] ?? ''),
-        'dst'    => (string)($_GET['dst'] ?? ''),
-        'disposition' => (string)($_GET['disposition'] ?? ''),
-        'mindur' => (string)($_GET['mindur'] ?? ''),
-        'preset' => (string)($_GET['preset'] ?? ''),
-        'gateway'=> (string)($_GET['gateway'] ?? ''),
-        'group'  => (string)($_GET['group'] ?? 'call'),
-        'page'   => 1,
-        'per'    => 200,
-        'sort'   => 'start_calldate',
-        'dir'    => 'asc',
-        'format' => 'html',
-    ];
-
-    try {
-        $legs = Supervisor\Lib\fetchTransitions($pdo, $grpkey, $filtersTmp, $acl, $settings['cdr_table']);
-        echo json_encode(['ok'=>true,'legs'=>$legs], JSON_UNESCAPED_SLASHES);
-    } catch (Throwable $e) {
-        echo json_encode(['ok'=>false,'error'=>$e->getMessage()]);
-    }
-    exit;
-}
-
-// --- Inputs ---
+// --- Inputs (needed for actions too) ---
 $from = (string)($_GET['from'] ?? date('Y-m-d'));
 $to   = (string)($_GET['to'] ?? date('Y-m-d'));
 
@@ -134,6 +99,60 @@ $filters = [
     'format' => $format,
 ];
 
+// AJAX transitions endpoint
+if ($action === 'transitions') {
+    header('Content-Type: application/json; charset=utf-8');
+    $grpkey = trim((string)($_GET['grpkey'] ?? ''));
+    if ($grpkey === '') { echo json_encode(['ok'=>false,'error'=>'Missing grpkey']); exit; }
+
+    $filtersTmp = $filters;
+    $filtersTmp['page'] = 1;
+    $filtersTmp['per']  = 200;
+    $filtersTmp['sort'] = 'start_calldate';
+    $filtersTmp['dir']  = 'asc';
+    $filtersTmp['format'] = 'html';
+
+    try {
+        $legs = Supervisor\Lib\fetchTransitions($pdo, $grpkey, $filtersTmp, $acl, $settings['cdr_table']);
+        echo json_encode(['ok'=>true,'legs'=>$legs], JSON_UNESCAPED_SLASHES);
+    } catch (Throwable $e) {
+        echo json_encode(['ok'=>false,'error'=>$e->getMessage()]);
+    }
+    exit;
+}
+
+// Recording playback endpoint (secure + ACL + date-range constrained)
+if ($action === 'recording') {
+    $uniqueid = trim((string)($_GET['uniqueid'] ?? ''));
+    if ($uniqueid === '') {
+        http_response_code(400);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo "Missing uniqueid\n";
+        exit;
+    }
+
+    // Constrain lookup by current date range and ACL
+    $leg = Supervisor\Lib\fetchLegByUniqueid($pdo, $uniqueid, $filters, $acl, $settings['cdr_table']);
+    if (!$leg) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo "Not found\n";
+        exit;
+    }
+
+    $recBase = getenv('RECORDINGS_DIR') ?: '/var/spool/asterisk/monitor';
+    $abs = Supervisor\Lib\findRecordingFile((string)$recBase, (string)($leg['recordingfile'] ?? ''), (string)($leg['calldate'] ?? ''));
+    if (!$abs) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo "Recording not found\n";
+        exit;
+    }
+
+    Supervisor\Lib\streamFile($abs, 'inline');
+    exit;
+}
+
 // --- CSV export ---
 if (strtolower($format) === 'csv') {
     streamCsv($pdo, $filters, $acl, $allowedExts, $settings['cdr_table']);
@@ -141,9 +160,15 @@ if (strtolower($format) === 'csv') {
 
 // --- summary + data ---
 $summary = Supervisor\Lib\fetchSummary($pdo, $filters, $acl, $allowedExts, $settings['cdr_table']);
-$totalGroups = Supervisor\Lib\countGroups($pdo, $filters, $acl, $allowedExts, $settings['cdr_table']);
 
-$pages = max(1, (int)ceil($totalGroups / max(1, (int)$per)));
+// IMPORTANT: correct pager totals for group=ext
+if ($group === 'ext') {
+    $totalItems = Supervisor\Lib\countExtensions($pdo, $filters, $acl, $allowedExts, $settings['cdr_table']);
+} else {
+    $totalItems = Supervisor\Lib\countGroups($pdo, $filters, $acl, $allowedExts, $settings['cdr_table']);
+}
+
+$pages = max(1, (int)ceil($totalItems / max(1, (int)$per)));
 if ($pageNo > $pages) { $pageNo = $pages; $filters['page'] = $pageNo; }
 
 $rows = [];

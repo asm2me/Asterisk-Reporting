@@ -4,7 +4,6 @@ declare(strict_types=1);
 namespace Supervisor\Lib;
 
 use PDO;
-use Throwable;
 
 /**
  * CDR querying + grouping
@@ -30,25 +29,18 @@ function normalizeGateway(string $gw): string {
     $gw = trim($gw);
     if ($gw === '') return '';
     $gw = str_replace("\0", '', $gw);
-    // remove trailing wildcard
     $gw = rtrim($gw, '%');
-    // remove trailing dash if user included dash
     $gw = rtrim($gw, '-');
     return $gw;
 }
 
 function gatewayLike(string $gw): string {
-    // We want: "PJSIP/we-%"
     $gw = normalizeGateway($gw);
     if ($gw === '') return '';
     return $gw . "-%";
 }
 
 function buildAllowedExtLikeClauses(array $allowedExts, array &$params, string $prefix = 'ext'): string {
-    // Matches local extension channels:
-    //  PJSIP/100-...
-    //  SIP/100-...
-    //  Local/100@...
     $parts = [];
     $i = 0;
     foreach ($allowedExts as $e) {
@@ -80,7 +72,6 @@ function buildGatewayClause(string $gateway, array &$params, string $paramName =
 }
 
 function requireBindAll(PDO $pdo, string $sql, array $params): void {
-    // Simple sanity check (debug friendly): ensure all :names appearing are present in params
     if (preg_match_all('/:\w+/', $sql, $m)) {
         $need = array_unique($m[0]);
         foreach ($need as $n) {
@@ -89,6 +80,17 @@ function requireBindAll(PDO $pdo, string $sql, array $params): void {
             }
         }
     }
+}
+
+function paramsForSql(string $sql, array $params): array {
+    // PDO throws HY093 if you pass extra named parameters. Filter to only those used.
+    if (!preg_match_all('/:\w+/', $sql, $m)) return [];
+    $need = array_unique($m[0]);
+    $out = [];
+    foreach ($need as $n) {
+        if (array_key_exists($n, $params)) $out[$n] = $params[$n];
+    }
+    return $out;
 }
 
 /**
@@ -102,11 +104,9 @@ function buildLegWhere(array $filters, array $acl, array &$params): string {
     $params[':fromDt'] = (string)$filters['fromDt'];
     $params[':toDt']   = (string)$filters['toDt'];
 
-    // ACL clause passed in (already contains its own params merged before call)
     $where[] = $acl['where'];
     foreach ($acl['params'] as $k => $v) $params[$k] = $v;
 
-    // Search q over common fields
     $q = trim((string)($filters['q'] ?? ''));
     if ($q !== '') {
         $like = '%' . $q . '%';
@@ -119,7 +119,6 @@ function buildLegWhere(array $filters, array $acl, array &$params): string {
         $params[':q6'] = $like;
     }
 
-    // src / dst digits filters
     $src = trim((string)($filters['src'] ?? ''));
     if ($src !== '' && preg_match('/^[0-9]+$/', $src)) {
         $where[] = "(src = :src_num OR channel LIKE :src_ch1 OR channel LIKE :src_ch2)";
@@ -136,7 +135,6 @@ function buildLegWhere(array $filters, array $acl, array &$params): string {
         $params[':dst_ch2'] = "PJSIP/{$dst}-%";
     }
 
-    // disposition leg filter (optional)
     $disp = strtoupper(trim((string)($filters['disposition'] ?? '')));
     if ($disp !== '' && preg_match('/^[A-Z_ ]+$/', $disp)) {
         if ($disp === 'NO ANSWER') {
@@ -149,7 +147,6 @@ function buildLegWhere(array $filters, array $acl, array &$params): string {
         }
     }
 
-    // min billsec leg filter (optional)
     $minDur = trim((string)($filters['mindur'] ?? ''));
     if ($minDur !== '' && ctype_digit($minDur)) {
         $where[] = "billsec >= :mindur";
@@ -161,17 +158,20 @@ function buildLegWhere(array $filters, array $acl, array &$params): string {
 
 /**
  * Apply preset at GROUP LEVEL (correct classification).
- *
- * Returns extra SQL that can be appended to the group selection query (WHERE ... AND <extra>).
  */
-function buildPresetGroupWhere(string $preset, string $gateway, array $allowedExts, string $cdrTable, string $legWhereSql, array &$params): string {
+function buildPresetGroupWhere(
+    string $preset,
+    string $gateway,
+    array $allowedExts,
+    string $cdrTable,
+    string $legWhereSql,
+    array &$params
+): string {
     $preset = strtolower(trim($preset));
     if ($preset === '') return "1=1";
 
     $grp = grpKeySql();
 
-    // Subquery giving the FIRST leg per group (by earliest calldate).
-    // NOTE: Use min(calldate) to identify start time, then join back to pick the row(s).
     $firstLegSub = "
         SELECT g.grpkey, MIN(g.calldate) AS first_calldate
         FROM (
@@ -185,7 +185,6 @@ function buildPresetGroupWhere(string $preset, string $gateway, array $allowedEx
     $gwClauseFirst = buildGatewayClause($gateway, $params, 'gw_first');
     $gwClauseAny   = buildGatewayClause($gateway, $params, 'gw_any');
 
-    // any-answered leg in group
     $answeredAny = "
         EXISTS (
             SELECT 1 FROM `{$cdrTable}` a
@@ -194,7 +193,6 @@ function buildPresetGroupWhere(string $preset, string $gateway, array $allowedEx
         )
     ";
 
-    // FIRST leg is gateway?
     $firstIsGateway = "
         EXISTS (
             SELECT 1
@@ -205,7 +203,6 @@ function buildPresetGroupWhere(string $preset, string $gateway, array $allowedEx
         )
     ";
 
-    // FIRST leg is local ext?
     $extParams = [];
     $firstIsExtClause = buildAllowedExtLikeClauses($allowedExts, $extParams, 'firstext');
     foreach ($extParams as $k => $v) $params[$k] = $v;
@@ -220,7 +217,6 @@ function buildPresetGroupWhere(string $preset, string $gateway, array $allowedEx
         )
     ";
 
-    // group touches gateway anywhere?
     $groupHasGatewayAny = "
         EXISTS (
             SELECT 1 FROM `{$cdrTable}` g2
@@ -230,20 +226,14 @@ function buildPresetGroupWhere(string $preset, string $gateway, array $allowedEx
     ";
 
     if ($preset === 'inbound') {
-        // trunk initiated (FIRST leg is gateway)
         return "({$firstIsGateway})";
     }
-
     if ($preset === 'outbound') {
-        // extension initiated (FIRST leg is local ext) AND gateway exists somewhere
         return "({$firstIsExt} AND {$groupHasGatewayAny})";
     }
-
     if ($preset === 'missed') {
-        // missed = inbound AND no answered anywhere
         return "({$firstIsGateway} AND NOT {$answeredAny})";
     }
-
     return "1=1";
 }
 
@@ -260,7 +250,6 @@ function fetchSummary(PDO $pdo, array $filters, array $acl, array $allowedExts, 
 
     $grp = grpKeySql();
 
-    // Build grouped view then compute answered/missed at group-level
     $sql = "
         SELECT
           COUNT(*) AS total_groups,
@@ -281,7 +270,7 @@ function fetchSummary(PDO $pdo, array $filters, array $acl, array $allowedExts, 
 
     requireBindAll($pdo, $sql, $params);
     $st = $pdo->prepare($sql);
-    $st->execute($params);
+    $st->execute(paramsForSql($sql, $params));
     $r = $st->fetch(PDO::FETCH_ASSOC) ?: [];
 
     return [
@@ -311,13 +300,11 @@ function fetchPageRows(PDO $pdo, array $filters, array $acl, array $allowedExts,
     if ($per > 200) $per = 200;
     $offset = ($pageNo - 1) * $per;
 
-    // Sorting on grouped rows
     $sort = (string)($filters['sort'] ?? 'start_calldate');
     $dir  = strtolower((string)($filters['dir'] ?? 'desc')) === 'asc' ? 'asc' : 'desc';
     $allowedSort = ['start_calldate','src','dst','status','total_billsec','legs'];
     if (!in_array($sort, $allowedSort, true)) $sort = 'start_calldate';
 
-    // grouped rows with representative (min calldate) values
     $sql = "
       SELECT
         grp.grpkey,
@@ -357,13 +344,9 @@ function fetchPageRows(PDO $pdo, array $filters, array $acl, array $allowedExts,
     requireBindAll($pdo, $sql, $params);
     $st = $pdo->prepare($sql);
 
-    // bind ints
     foreach ($params as $k => $v) {
-        if ($k === ':lim' || $k === ':off') {
-            $st->bindValue($k, (int)$v, PDO::PARAM_INT);
-        } else {
-            $st->bindValue($k, $v);
-        }
+        if ($k === ':lim' || $k === ':off') $st->bindValue($k, (int)$v, PDO::PARAM_INT);
+        else $st->bindValue($k, $v);
     }
 
     $st->execute();
@@ -371,7 +354,7 @@ function fetchPageRows(PDO $pdo, array $filters, array $acl, array $allowedExts,
 }
 
 /**
- * Count groups (for pagination)
+ * Count groups (for pagination) - group=call
  */
 function countGroups(PDO $pdo, array $filters, array $acl, array $allowedExts, string $cdrTable): int {
     $params = [];
@@ -396,7 +379,7 @@ function countGroups(PDO $pdo, array $filters, array $acl, array $allowedExts, s
 
     requireBindAll($pdo, $sql, $params);
     $st = $pdo->prepare($sql);
-    $st->execute($params);
+    $st->execute(paramsForSql($sql, $params));
     $r = $st->fetch(PDO::FETCH_ASSOC) ?: [];
     return (int)($r['c'] ?? 0);
 }
@@ -423,13 +406,12 @@ function fetchTransitions(PDO $pdo, string $grpkey, array $filters, array $acl, 
 
     requireBindAll($pdo, $sql, $params);
     $st = $pdo->prepare($sql);
-    $st->execute($params);
+    $st->execute(paramsForSql($sql, $params));
     return $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
 }
 
 /**
  * Extension grouping (group=ext)
- * - inbound/outbound presets apply using same group-level rules, but the aggregation is per extension.
  */
 function fetchByExtension(PDO $pdo, array $filters, array $acl, array $allowedExts, string $cdrTable): array {
     $params = [];
@@ -447,8 +429,6 @@ function fetchByExtension(PDO $pdo, array $filters, array $acl, array $allowedEx
 
     $grp = grpKeySql();
 
-    // We attribute a group to an extension based on FIRST local extension found in the group (by time)
-    // This is a practical heuristic for “grouping by extension” view.
     $extParams = [];
     $extClause = buildAllowedExtLikeClauses($allowedExts, $extParams, 'anyext');
     foreach ($extParams as $k => $v) $params[$k] = $v;
@@ -511,5 +491,86 @@ function fetchByExtension(PDO $pdo, array $filters, array $acl, array $allowedEx
     }
     $st->execute();
     return $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+
+/**
+ * Count distinct extensions for pagination (group=ext)
+ */
+function countExtensions(PDO $pdo, array $filters, array $acl, array $allowedExts, string $cdrTable): int {
+    $params = [];
+    $legWhereSql = buildLegWhere($filters, $acl, $params);
+
+    $preset = (string)($filters['preset'] ?? '');
+    $gateway = (string)($filters['gateway'] ?? '');
+    $presetGroupWhere = buildPresetGroupWhere($preset, $gateway, $allowedExts, $cdrTable, $legWhereSql, $params);
+
+    $grp = grpKeySql();
+
+    $extParams = [];
+    $extClause = buildAllowedExtLikeClauses($allowedExts, $extParams, 'cnt_ext');
+    foreach ($extParams as $k => $v) $params[$k] = $v;
+
+    $sql = "
+      SELECT COUNT(*) AS c
+      FROM (
+        SELECT
+          (
+            SELECT
+              CASE
+                WHEN f.channel REGEXP '^(PJSIP|SIP)/[0-9]+' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(f.channel,'/',-1),'-',1)
+                WHEN f.dstchannel REGEXP '^(PJSIP|SIP)/[0-9]+' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(f.dstchannel,'/',-1),'-',1)
+                WHEN f.channel LIKE 'Local/%' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(f.channel,'/',-1),'@',1)
+                WHEN f.dstchannel LIKE 'Local/%' THEN SUBSTRING_INDEX(SUBSTRING_INDEX(f.dstchannel,'/',-1),'@',1)
+                ELSE ''
+              END
+            FROM `{$cdrTable}` f
+            WHERE {$grp} = grp.grpkey
+              AND {$extClause}
+            ORDER BY f.calldate ASC
+            LIMIT 1
+          ) AS ext
+        FROM (
+          SELECT {$grp} AS grpkey
+          FROM `{$cdrTable}`
+          WHERE {$legWhereSql}
+          GROUP BY {$grp}
+        ) grp
+        WHERE {$presetGroupWhere}
+      ) x
+      WHERE x.ext <> ''
+      GROUP BY x.ext
+    ";
+
+    requireBindAll($pdo, $sql, $params);
+    $st = $pdo->prepare($sql);
+    $st->execute(paramsForSql($sql, $params));
+    $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    return count($rows);
+}
+
+/**
+ * Fetch one leg by uniqueid (for recording playback endpoint)
+ */
+function fetchLegByUniqueid(PDO $pdo, string $uniqueid, array $filters, array $acl, string $cdrTable): ?array {
+    $uniqueid = trim($uniqueid);
+    if ($uniqueid === '') return null;
+
+    $params = [':uid' => $uniqueid];
+    $legWhereSql = buildLegWhere($filters, $acl, $params);
+
+    $sql = "
+      SELECT calldate, uniqueid, recordingfile
+      FROM `{$cdrTable}`
+      WHERE {$legWhereSql}
+        AND uniqueid = :uid
+      ORDER BY calldate DESC
+      LIMIT 1
+    ";
+
+    requireBindAll($pdo, $sql, $params);
+    $st = $pdo->prepare($sql);
+    $st->execute(paramsForSql($sql, $params));
+    $r = $st->fetch(PDO::FETCH_ASSOC);
+    return $r ?: null;
 }
 

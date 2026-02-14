@@ -137,6 +137,7 @@ header('Content-Type: text/html; charset=utf-8');
   .legsBox{padding:10px 10px 14px 10px}
   .debugBox{display:none;margin-top:10px}
   pre{white-space:pre-wrap;word-break:break-word;margin:0;background:rgba(0,0,0,.25);border:1px solid var(--line);border-radius:12px;padding:10px;color:#dbe7ff;font-size:12px}
+  audio{width:220px;max-width:100%}
 </style>
 </head>
 <body>
@@ -280,6 +281,19 @@ header('Content-Type: text/html; charset=utf-8');
         </tbody>
       </table>
     </div>
+
+    <div class="pager">
+      <div class="left">Page <?= (int)$pageNo ?> / <?= (int)$pages ?></div>
+      <div class="right">
+        <?php $prev = max(1, $pageNo - 1); $next = min($pages, $pageNo + 1); ?>
+        <a class="mini" href="<?= h(buildUrl(['page'=>1])) ?>">⟪ First</a>
+        <a class="mini" href="<?= h(buildUrl(['page'=>$prev])) ?>">‹ Prev</a>
+        <span class="mini">Page <?= (int)$pageNo ?></span>
+        <a class="mini" href="<?= h(buildUrl(['page'=>$next])) ?>">Next ›</a>
+        <a class="mini" href="<?= h(buildUrl(['page'=>$pages])) ?>">Last ⟫</a>
+      </div>
+    </div>
+
   <?php else: ?>
     <div class="card">
       <table>
@@ -366,9 +380,17 @@ header('Content-Type: text/html; charset=utf-8');
     });
   }
 
-  function qs(params){
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, function(m){
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]);
+    });
+  }
+
+  function buildRecordingUrl(uniqueid){
     const u = new URL(window.location.href);
-    Object.keys(params).forEach(k => u.searchParams.set(k, params[k]));
+    u.searchParams.set('action', 'recording');
+    u.searchParams.set('uniqueid', uniqueid);
+    // keep date range on purpose (server constrains lookup to it)
     return u.toString();
   }
 
@@ -415,6 +437,7 @@ header('Content-Type: text/html; charset=utf-8');
             <th>disposition</th>
             <th>billsec</th>
             <th>uniqueid</th>
+            <th>recording</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -423,6 +446,23 @@ header('Content-Type: text/html; charset=utf-8');
 
       legs.forEach(l => {
         const tr = document.createElement('tr');
+
+        const rec = (l.recordingfile || '').trim();
+        let recHtml = '<span class="pill">—</span>';
+
+        if (rec && l.uniqueid) {
+          const url = buildRecordingUrl(l.uniqueid);
+          recHtml = `
+            <audio controls preload="none" src="${escapeHtml(url)}"></audio>
+            <div style="margin-top:6px">
+              <a href="${escapeHtml(url)}" target="_blank" rel="noopener">open</a>
+              <span class="pill" title="recordingfile">${escapeHtml(rec)}</span>
+            </div>
+          `;
+        } else if (rec) {
+          recHtml = `<span class="pill">${escapeHtml(rec)}</span>`;
+        }
+
         tr.innerHTML = `
           <td>${escapeHtml(l.calldate || '')}</td>
           <td>${escapeHtml(l.src || '')}</td>
@@ -432,6 +472,7 @@ header('Content-Type: text/html; charset=utf-8');
           <td>${escapeHtml(l.disposition || '')}</td>
           <td>${escapeHtml(String(l.billsec ?? ''))}</td>
           <td><span class="mono">${escapeHtml(l.uniqueid || '')}</span></td>
+          <td>${recHtml}</td>
         `;
         tb.appendChild(tr);
       });
@@ -441,12 +482,6 @@ header('Content-Type: text/html; charset=utf-8');
     } catch (e) {
       statusEl.textContent = 'Failed to load transitions.';
     }
-  }
-
-  function escapeHtml(s){
-    return String(s).replace(/[&<>"']/g, function(m){
-      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]);
-    });
   }
 
   document.querySelectorAll('.plus').forEach(el => {
