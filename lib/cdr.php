@@ -100,21 +100,24 @@ function buildWhere(array $CONFIG, array $me, array $filters, array &$params): s
                 $where[] = "dstchannel LIKE :gw_preset";
                 $params[':gw_preset'] = $gwPattern;
             } elseif ($preset === 'missed') {
-                // Missed: ALL missed calls involving gateway (inbound OR outbound)
+                // Missed: ALL missed calls involving gateway (not bridged, excluding queue abandoned)
                 $where[] = "(channel LIKE :gw_preset_ch OR dstchannel LIKE :gw_preset_dch)";
-                $where[] = "disposition IN ('NO ANSWER', 'NOANSWER')";
+                $where[] = "(dstchannel IS NULL OR dstchannel = '' OR dst = 's')";
+                $where[] = "dcontext NOT LIKE '%ext-queues%'";
                 $params[':gw_preset_ch'] = $gwPattern;
                 $params[':gw_preset_dch'] = $gwPattern;
             } elseif ($preset === 'missed_in') {
-                // Missed inbound: calls FROM gateway (source) with NO ANSWER
+                // Missed inbound: calls FROM gateway (not bridged, excluding queue abandoned)
                 $where[] = "channel LIKE :gw_preset";
-                $where[] = "disposition IN ('NO ANSWER', 'NOANSWER')";
+                $where[] = "(dstchannel IS NULL OR dstchannel = '' OR dst = 's')";
+                $where[] = "dcontext NOT LIKE '%ext-queues%'";
                 $params[':gw_preset'] = $gwPattern;
             } elseif ($preset === 'missed_out') {
-                // Missed outbound: calls TO gateway (destination) with NO ANSWER
-                $where[] = "dstchannel LIKE :gw_preset";
-                $where[] = "disposition IN ('NO ANSWER', 'NOANSWER')";
-                $params[':gw_preset'] = $gwPattern;
+                // Missed outbound: calls FROM internal TO gateway (not bridged, excluding queue abandoned)
+                $where[] = "channel NOT LIKE :gw_preset_ch";
+                $where[] = "(dstchannel IS NULL OR dstchannel = '' OR dst = 's')";
+                $where[] = "dcontext NOT LIKE '%ext-queues%'";
+                $params[':gw_preset_ch'] = $gwPattern;
             } elseif ($preset === 'internal') {
                 // Internal: exclude gateway calls (both source and destination)
                 $where[] = "channel NOT LIKE :gw_preset_ch";
@@ -123,6 +126,12 @@ function buildWhere(array $CONFIG, array $me, array $filters, array &$params): s
                 $params[':gw_preset_dch'] = $gwPattern;
             }
         }
+    }
+
+    // Abandoned preset (doesn't require gateway)
+    if ($preset === 'abandoned') {
+        $where[] = "(dstchannel IS NULL OR dstchannel = '' OR dst = 's')";
+        $where[] = "dcontext LIKE '%ext-queues%'";
     }
 
     return implode(' AND ', $where);
@@ -136,8 +145,10 @@ function fetchSummary(array $CONFIG, PDO $pdo, array $me, array $filters): array
     $sumSql = "
     SELECT
       COUNT(*) AS total,
-      SUM(CASE WHEN disposition='ANSWERED' THEN 1 ELSE 0 END) AS answered,
+      SUM(CASE WHEN (dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's') THEN 1 ELSE 0 END) AS answered,
       SUM(CASE WHEN disposition='BUSY' THEN 1 ELSE 0 END) AS busy,
+      SUM(CASE WHEN (dstchannel IS NULL OR dstchannel = '' OR dst = 's') AND (dcontext NOT LIKE '%ext-queues%' OR dcontext IS NULL) THEN 1 ELSE 0 END) AS missed,
+      SUM(CASE WHEN (dstchannel IS NULL OR dstchannel = '' OR dst = 's') AND dcontext LIKE '%ext-queues%' THEN 1 ELSE 0 END) AS abandoned,
       SUM(CASE WHEN disposition IN ('NO ANSWER','NOANSWER') THEN 1 ELSE 0 END) AS noanswer,
       SUM(CASE WHEN disposition='FAILED' THEN 1 ELSE 0 END) AS failed,
       SUM(CASE WHEN disposition IN ('CONGESTION','CONGESTED') THEN 1 ELSE 0 END) AS congested,
@@ -155,7 +166,90 @@ function fetchSummary(array $CONFIG, PDO $pdo, array $me, array $filters): array
         }
     }
     $st->execute();
-    return $st->fetch() ?: ['total'=>0,'answered'=>0,'busy'=>0,'noanswer'=>0,'failed'=>0,'congested'=>0,'total_billsec'=>0];
+    return $st->fetch() ?: ['total'=>0,'answered'=>0,'busy'=>0,'missed'=>0,'abandoned'=>0,'noanswer'=>0,'failed'=>0,'congested'=>0,'total_billsec'=>0];
+}
+
+function fetchMaxConcurrentCalls(array $CONFIG, PDO $pdo, array $me, array $filters): int {
+    $params = [];
+    $whereSql = buildWhere($CONFIG, $me, $filters, $params);
+    $cdrTable = $CONFIG['cdrTable'];
+    $gateway = trim((string)($filters['gateway'] ?? ''));
+
+    // If no gateway specified, use first from config
+    if ($gateway === '') {
+        $gateways = $CONFIG['gateways'] ?? [];
+        if (!empty($gateways)) {
+            $gateway = $gateways[0];
+        }
+    }
+
+    // Build gateway pattern
+    if ($gateway !== '') {
+        $gwPattern = str_replace("\0", '', $gateway);
+        $gwPattern = rtrim($gwPattern, '%');
+        $gwPattern = rtrim($gwPattern, '-');
+        $gwPattern = $gwPattern . '-%';
+    } else {
+        // No gateway, return 0
+        return 0;
+    }
+
+    // Fetch all trunk calls with start/end times
+    $sql = "
+    SELECT
+        calldate,
+        DATE_ADD(calldate, INTERVAL duration SECOND) as endtime
+    FROM `{$cdrTable}`
+    WHERE {$whereSql}
+      AND (channel LIKE :max_conc_gw_ch OR dstchannel LIKE :max_conc_gw_dch)
+    ORDER BY calldate
+    ";
+
+    $st = $pdo->prepare($sql);
+    foreach ($params as $k => $v) {
+        if (is_int($v)) {
+            $st->bindValue($k, $v, PDO::PARAM_INT);
+        } else {
+            $st->bindValue($k, (string)$v, PDO::PARAM_STR);
+        }
+    }
+    $st->bindValue(':max_conc_gw_ch', $gwPattern, PDO::PARAM_STR);
+    $st->bindValue(':max_conc_gw_dch', $gwPattern, PDO::PARAM_STR);
+    $st->execute();
+
+    $calls = $st->fetchAll();
+    if (empty($calls)) return 0;
+
+    // Create events array (start and end events)
+    $events = [];
+    foreach ($calls as $call) {
+        $events[] = ['time' => strtotime($call['calldate']), 'type' => 'start'];
+        $events[] = ['time' => strtotime($call['endtime']), 'type' => 'end'];
+    }
+
+    // Sort events by time
+    usort($events, function($a, $b) {
+        if ($a['time'] === $b['time']) {
+            // If same time, process 'end' before 'start'
+            return $a['type'] === 'end' ? -1 : 1;
+        }
+        return $a['time'] - $b['time'];
+    });
+
+    // Calculate max concurrent calls
+    $currentConcurrent = 0;
+    $maxConcurrent = 0;
+
+    foreach ($events as $event) {
+        if ($event['type'] === 'start') {
+            $currentConcurrent++;
+            $maxConcurrent = max($maxConcurrent, $currentConcurrent);
+        } else {
+            $currentConcurrent--;
+        }
+    }
+
+    return $maxConcurrent;
 }
 
 function fetchPageRows(array $CONFIG, PDO $pdo, array $me, array $filters): array {
@@ -171,10 +265,25 @@ function fetchPageRows(array $CONFIG, PDO $pdo, array $me, array $filters): arra
     $offset = ($pageNo - 1) * $per;
 
     $sql = "
-    SELECT calldate, clid, src, dst, channel, dstchannel, dcontext, disposition, duration, billsec, uniqueid, recordingfile,
-           COALESCE(linkedid, uniqueid) as linkedid
-    FROM `{$cdrTable}`
+    SELECT t1.calldate, t1.clid, t1.src, t1.dst, t1.channel, t1.dstchannel, t1.dcontext, t1.disposition,
+           t1.duration, t1.billsec, t1.uniqueid, t1.recordingfile,
+           COALESCE(t1.linkedid, t1.uniqueid) as linkedid,
+           (SELECT COUNT(*) FROM `{$cdrTable}` t2
+            WHERE COALESCE(t2.linkedid, t2.uniqueid) = COALESCE(t1.linkedid, t1.uniqueid)) as leg_count,
+           t1.disposition as last_leg_status,
+           (SELECT t4.dst FROM `{$cdrTable}` t4
+            WHERE COALESCE(t4.linkedid, t4.uniqueid) = COALESCE(t1.linkedid, t1.uniqueid)
+              AND (t4.dstchannel IS NOT NULL AND t4.dstchannel != '')
+            ORDER BY t4.calldate DESC, t4.uniqueid DESC
+            LIMIT 1) as last_bridged_dst
+    FROM `{$cdrTable}` t1
     WHERE {$whereSql}
+      AND t1.uniqueid = (
+        SELECT t3.uniqueid FROM `{$cdrTable}` t3
+        WHERE COALESCE(t3.linkedid, t3.uniqueid) = COALESCE(t1.linkedid, t1.uniqueid)
+        ORDER BY t3.calldate DESC, t3.uniqueid DESC
+        LIMIT 1
+      )
     ORDER BY {$sort} {$dir}
     LIMIT :lim OFFSET :off
     ";
@@ -322,6 +431,50 @@ function fetchGateways(array $CONFIG, PDO $pdo): array {
             }
         }
         return $gateways;
+    } catch (Throwable $e) {
+        return [];
+    }
+}
+
+function fetchExtensionKPIs(array $CONFIG, PDO $pdo, array $me, array $filters): array {
+    $params = [];
+    $whereSql = buildWhere($CONFIG, $me, $filters, $params);
+    $cdrTable = $CONFIG['cdrTable'];
+
+    // Get KPIs per extension (from src field)
+    $sql = "
+    SELECT
+        src as extension,
+        COUNT(*) as total_calls,
+        SUM(CASE WHEN (dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's') THEN 1 ELSE 0 END) as answered,
+        SUM(CASE WHEN (dstchannel IS NULL OR dstchannel = '' OR dst = 's') AND (dcontext NOT LIKE '%ext-queues%' OR dcontext IS NULL) THEN 1 ELSE 0 END) as missed,
+        SUM(CASE WHEN (dstchannel IS NULL OR dstchannel = '' OR dst = 's') AND dcontext LIKE '%ext-queues%' THEN 1 ELSE 0 END) as abandoned,
+        SUM(CASE WHEN disposition='BUSY' THEN 1 ELSE 0 END) as busy,
+        SUM(CASE WHEN disposition='FAILED' THEN 1 ELSE 0 END) as failed,
+        SUM(billsec) as total_billsec,
+        SUM(duration) as total_duration,
+        AVG(CASE WHEN (dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's') THEN billsec ELSE NULL END) as avg_talk_time,
+        AVG(CASE WHEN (dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's') THEN (duration - billsec) ELSE NULL END) as avg_wait_time,
+        MAX(billsec) as max_call_duration,
+        MIN(CASE WHEN (dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's') AND billsec > 0 THEN billsec ELSE NULL END) as min_call_duration
+    FROM `{$cdrTable}`
+    WHERE {$whereSql}
+      AND src REGEXP '^[0-9]+$'
+    GROUP BY src
+    ORDER BY total_calls DESC
+    ";
+
+    try {
+        $st = $pdo->prepare($sql);
+        foreach ($params as $k => $v) {
+            if (is_int($v)) {
+                $st->bindValue($k, $v, PDO::PARAM_INT);
+            } else {
+                $st->bindValue($k, (string)$v, PDO::PARAM_STR);
+            }
+        }
+        $st->execute();
+        return $st->fetchAll() ?: [];
     } catch (Throwable $e) {
         return [];
     }

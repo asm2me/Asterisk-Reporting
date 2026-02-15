@@ -88,6 +88,7 @@ $filters = [
 
 $summary = fetchSummary($CONFIG, $pdo, $me, $filters);
 $total   = (int)($summary['total'] ?? 0);
+$maxConcurrent = fetchMaxConcurrentCalls($CONFIG, $pdo, $me, $filters);
 
 $pages = max(1, (int)ceil($total / $per));
 if ($pageNo > $pages) $pageNo = $pages;

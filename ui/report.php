@@ -18,6 +18,8 @@ use function sortLink;
 
 $answered     = (int)($summary['answered'] ?? 0);
 $busy         = (int)($summary['busy'] ?? 0);
+$missed       = (int)($summary['missed'] ?? 0);
+$abandoned    = (int)($summary['abandoned'] ?? 0);
 $noanswer     = (int)($summary['noanswer'] ?? 0);
 $failed       = (int)($summary['failed'] ?? 0);
 $congested    = (int)($summary['congested'] ?? 0);
@@ -161,6 +163,7 @@ $gateway = (string)($filters['gateway'] ?? '');
       </div>
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <a class="btn" href="kpi.php">📊 Extension KPIs</a>
       <?php if ($isAdmin): ?><a class="btn" href="<?= h(buildUrl(['page'=>'users'])) ?>">👤 User Management</a><?php endif; ?>
       <a class="btn" href="<?= h(buildUrl(['format'=>'csv','page'=>1])) ?>">⬇ Export CSV</a>
       <a class="btn danger" href="<?= h(buildUrl(['action'=>'logout'])) ?>">🚪 Logout</a>
@@ -170,10 +173,11 @@ $gateway = (string)($filters['gateway'] ?? '');
   <div class="grid">
     <div class="card"><div class="k">Total Calls</div><div class="v"><?= (int)$total ?></div></div>
     <div class="card"><div class="k">Answered</div><div class="v" style="color:var(--ok)"><?= (int)$answered ?></div></div>
-    <div class="card"><div class="k">No Answer</div><div class="v" style="color:var(--warn)"><?= (int)$noanswer ?></div></div>
+    <div class="card"><div class="k">Missed (Not Bridged)</div><div class="v" style="color:var(--bad)"><?= (int)$missed ?></div></div>
+    <div class="card"><div class="k">Abandoned (Queue)</div><div class="v" style="color:var(--warn)"><?= (int)$abandoned ?></div></div>
     <div class="card"><div class="k">Busy</div><div class="v" style="color:var(--bad)"><?= (int)$busy ?></div></div>
     <div class="card"><div class="k">Failed</div><div class="v" style="color:var(--bad)"><?= (int)$failed ?></div></div>
-    <div class="card"><div class="k">Congested</div><div class="v" style="color:var(--bad)"><?= (int)$congested ?></div></div>
+    <div class="card"><div class="k">Max Trunk Concurrent</div><div class="v" style="color:var(--accent)"><?= (int)$maxConcurrent ?></div></div>
   </div>
 
   <div class="card" style="margin-bottom:12px;">
@@ -233,6 +237,7 @@ $gateway = (string)($filters['gateway'] ?? '');
             <option value="missed_in" <?= ($preset==='missed_in')?'selected':''; ?>>Missed (Inbound)</option>
             <option value="missed_out" <?= ($preset==='missed_out')?'selected':''; ?>>Missed (Outbound)</option>
             <option value="internal" <?= ($preset==='internal')?'selected':''; ?>>Internal</option>
+            <option value="abandoned" <?= ($preset==='abandoned')?'selected':''; ?>>Abandoned (Queue)</option>
           </select>
         </div>
 
@@ -290,8 +295,9 @@ $gateway = (string)($filters['gateway'] ?? '');
           <th>CLID</th>
           <th><?= sortLink('src','SRC',$sort,$dir) ?></th>
           <th><?= sortLink('dst','DST',$sort,$dir) ?></th>
+          <th>Legs</th>
           <th>Channel</th>
-          <th>DstChannel</th>
+          <th>Last Bridged DST</th>
           <th>Context</th>
           <th><?= sortLink('disposition','Disposition',$sort,$dir) ?></th>
           <th><?= sortLink('billsec','Billsec',$sort,$dir) ?></th>
@@ -304,10 +310,30 @@ $gateway = (string)($filters['gateway'] ?? '');
         $shown = 0;
         foreach ($rows as $r):
           $shown++;
-          $d = strtoupper((string)($r['disposition'] ?? ''));
-          $cls = 'warn';
-          if ($d === 'ANSWERED') $cls = 'ok';
-          elseif ($d === 'BUSY' || $d === 'FAILED' || $d === 'CONGESTION' || $d === 'CONGESTED') $cls = 'bad';
+          $legCount = (int)($r['leg_count'] ?? 1);
+          // Use last leg's disposition
+          $d = strtoupper((string)($r['last_leg_status'] ?? $r['disposition'] ?? ''));
+          $dcontext = (string)($r['dcontext'] ?? '');
+          $dstchannel = (string)($r['dstchannel'] ?? '');
+          $dst = (string)($r['dst'] ?? '');
+
+          // Check if call was not bridged
+          $notBridged = ($dstchannel === '' || $dst === 's');
+
+          // Consider calls that entered ext-queues and were not bridged as ABANDONED
+          if ($notBridged && stripos($dcontext, 'ext-queues') !== false) {
+            $d = 'ABANDONED';
+            $cls = 'warn';
+          }
+          // Consider calls with 1 leg as MISSED
+          elseif ($legCount === 1) {
+            $d = 'MISSED';
+            $cls = 'bad';
+          } else {
+            $cls = 'warn';
+            if ($d === 'ANSWERED') $cls = 'ok';
+            elseif ($d === 'BUSY' || $d === 'FAILED' || $d === 'CONGESTION' || $d === 'CONGESTED') $cls = 'bad';
+          }
 
           $uidVal = (string)($r['uniqueid'] ?? '');
           $recVal = trim((string)($r['recordingfile'] ?? ''));
@@ -326,10 +352,11 @@ $gateway = (string)($filters['gateway'] ?? '');
             <td data-label="CLID"><?= h((string)($r['clid'] ?? '')) ?></td>
             <td data-label="SRC"><?= h((string)($r['src'] ?? '')) ?></td>
             <td data-label="DST"><?= h((string)($r['dst'] ?? '')) ?></td>
+            <td data-label="Legs"><span class="num" style="color:<?= $legCount === 1 ? 'var(--bad)' : 'inherit' ?>"><?= $legCount ?></span></td>
             <td data-label="Channel" class="mono"><?= h((string)($r['channel'] ?? '')) ?></td>
-            <td data-label="DstChannel" class="mono"><?= h((string)($r['dstchannel'] ?? '')) ?></td>
+            <td data-label="Last Bridged DST"><?= h((string)($r['last_bridged_dst'] ?? '-')) ?></td>
             <td data-label="Context"><?= h((string)($r['dcontext'] ?? '')) ?></td>
-            <td data-label="Disposition"><span class="disp <?= h($cls) ?>"><?= h((string)($r['disposition'] ?? '')) ?></span></td>
+            <td data-label="Disposition"><span class="disp <?= h($cls) ?>"><?= h($d) ?></span></td>
             <td data-label="Billsec"><?= h((string)($r['billsec'] ?? '0')) ?></td>
             <td data-label="UniqueID" class="mono"><?= h($uidVal) ?></td>
             <td data-label="Recording">
@@ -344,7 +371,7 @@ $gateway = (string)($filters['gateway'] ?? '');
             </td>
           </tr>
           <tr id="<?= h($rowId) ?>" class="detail-row" style="display:none;">
-            <td colspan="12">
+            <td colspan="13">
               <div class="detail-panel">
                 <?php
                 $linkedId = (string)($r['linkedid'] ?? $r['uniqueid'] ?? '');
