@@ -116,7 +116,8 @@ $gateway = (string)($filters['gateway'] ?? '');
   .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:rgba(232,238,252,.85);word-break:break-all}
 
   .tableWrap{padding:0;overflow:auto;-webkit-overflow-scrolling:touch}
-  audio{width:220px;max-width:100%}
+  audio{width:300px;max-width:100%}
+  thead th:last-child,tbody td:last-child{min-width:320px;}
 
   .pager{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;flex-wrap:wrap}
   .pager .left{color:var(--muted);font-size:12px}
@@ -163,6 +164,7 @@ $gateway = (string)($filters['gateway'] ?? '');
       </div>
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <a class="btn" href="realtime.php">📡 Realtime Report</a>
       <a class="btn" href="kpi.php">📊 Extension KPIs</a>
       <?php if ($isAdmin): ?><a class="btn" href="<?= h(buildUrl(['page'=>'users'])) ?>">👤 User Management</a><?php endif; ?>
       <a class="btn" href="<?= h(buildUrl(['format'=>'csv','page'=>1])) ?>">⬇ Export CSV</a>

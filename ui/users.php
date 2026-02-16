@@ -37,7 +37,7 @@ use function h;
   </style>
 </head>
 <body>
-  <a href="index2.php" class="back-link">← Back to Report</a>
+  <a href="index.php" class="back-link">← Back to Report</a>
   <h1>User Management</h1>
 
   <?php if ($MSG !== ''): ?>

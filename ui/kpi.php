@@ -103,7 +103,7 @@ use function fmtTime;
       </div>
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;">
-      <a class="btn" href="index2.php">📞 CDR Report</a>
+      <a class="btn" href="index.php">📞 CDR Report</a>
       <?php if ($isAdmin): ?><a class="btn" href="?page=users">👤 User Management</a><?php endif; ?>
       <a class="btn danger" href="<?= h(buildUrl(['action'=>'logout'])) ?>">🚪 Logout</a>
     </div>

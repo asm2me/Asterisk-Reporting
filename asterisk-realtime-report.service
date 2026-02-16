@@ -1,0 +1,21 @@
+[Unit]
+Description=Asterisk Realtime Report Service
+After=network.target asterisk.service
+Wants=asterisk.service
+
+[Service]
+Type=simple
+User=asterisk
+Group=asterisk
+WorkingDirectory=/var/www/html/supervisor2
+ExecStart=/usr/bin/python3.6 /var/www/html/supervisor2/asterisk-realtime-report.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Security settings
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
