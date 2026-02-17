@@ -59,6 +59,11 @@ use function buildUrl;
   .status{display:inline-flex;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;}
   .status.active{background:rgba(68,209,157,.15);color:var(--ok);border:1px solid rgba(68,209,157,.3);}
   .status.ringing{background:rgba(255,204,102,.15);color:var(--warn);border:1px solid rgba(255,204,102,.3);}
+  .status.warn{background:rgba(255,204,102,.15);color:var(--warn);border:1px solid rgba(255,204,102,.3);}
+  .status.busy{background:rgba(255,107,122,.15);color:var(--bad);border:1px solid rgba(255,107,122,.3);}
+  .status.paused{background:rgba(159,176,208,.15);color:var(--muted);border:1px solid rgba(159,176,208,.3);}
+  .status.online{background:rgba(122,162,255,.15);color:var(--accent);border:1px solid rgba(122,162,255,.3);}
+  .status.offline{background:rgba(80,80,90,.15);color:#888;border:1px solid rgba(80,80,90,.3);}
 
   .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;}
 
@@ -140,11 +145,14 @@ use function buildUrl;
           <th>Internal</th>
           <th>Answered</th>
           <th>Missed</th>
-          <th>Avg Duration</th>
+          <th>THT</th>
+          <th>AHT</th>
+          <th>First Call</th>
+          <th>Last Call</th>
         </tr>
       </thead>
       <tbody id="kpisTable">
-        <tr><td colspan="11" style="color:var(--muted);padding:16px;text-align:center;">No extension data</td></tr>
+        <tr><td colspan="14" style="color:var(--muted);padding:16px;text-align:center;">No extension data</td></tr>
       </tbody>
     </table>
   </div>
@@ -211,19 +219,43 @@ function updateDisplay(data) {
   const kpisTable = document.getElementById('kpisTable');
   const kpis = data.extension_kpis || [];
   if (kpis.length === 0) {
-    kpisTable.innerHTML = '<tr><td colspan="11" style="color:var(--muted);padding:16px;text-align:center;">No extension data</td></tr>';
+    kpisTable.innerHTML = '<tr><td colspan="14" style="color:var(--muted);padding:16px;text-align:center;">No extension data</td></tr>';
   } else {
     kpisTable.innerHTML = kpis.map(kpi => {
       let statusClass, statusText;
-      if (kpi.status === 'on_call') {
-        statusClass = 'active';
-        statusText = 'On Call';
-      } else if (kpi.status === 'ringing') {
-        statusClass = 'ringing';
-        statusText = 'Ringing';
-      } else {
-        statusClass = 'ringing';
-        statusText = 'Available';
+
+      switch(kpi.status) {
+        case 'in-call':
+          statusClass = 'active';
+          statusText = 'In Call';
+          break;
+        case 'on-hold':
+          statusClass = 'warn';
+          statusText = 'On Hold';
+          break;
+        case 'ringing':
+          statusClass = 'ringing';
+          statusText = 'Ringing';
+          break;
+        case 'busy':
+          statusClass = 'busy';
+          statusText = 'Busy';
+          break;
+        case 'paused':
+          statusClass = 'paused';
+          statusText = 'Paused';
+          break;
+        case 'online':
+          statusClass = 'online';
+          statusText = 'Online';
+          break;
+        case 'offline':
+          statusClass = 'offline';
+          statusText = 'Offline';
+          break;
+        default:
+          statusClass = 'online';
+          statusText = 'Available';
       }
 
       // Show today's totals with live calls in parentheses if active
@@ -243,7 +275,10 @@ function updateDisplay(data) {
         <td data-label="Internal" style="color:var(--warn)">${internalDisplay}</td>
         <td data-label="Answered" style="color:var(--ok)">${kpi.answered_today || 0}</td>
         <td data-label="Missed" style="color:var(--bad)">${kpi.missed_today || 0}</td>
-        <td data-label="Avg Duration">${formatDuration(kpi.avg_duration || 0)}</td>
+        <td data-label="THT">${formatDuration(kpi.tht || 0)}</td>
+        <td data-label="AHT">${formatDuration(kpi.aht || 0)}</td>
+        <td data-label="First Call">${escapeHtml(kpi.first_call_start || '-')}</td>
+        <td data-label="Last Call">${escapeHtml(kpi.last_call_end || '-')}</td>
       </tr>
     `;
     }).join('');

@@ -156,6 +156,143 @@ class AsteriskAMI:
             print(f"✗ Error getting channels: {e}")
             return []
 
+    async def get_extension_states(self):
+        """Get SIP/PJSIP peer registration status"""
+        try:
+            command = "Action: SIPpeers\r\n\r\n"
+            self.writer.write(command.encode())
+            await self.writer.drain()
+
+            peer_states = {}
+            buffer = b""
+            timeout = time.time() + 3
+
+            while time.time() < timeout:
+                try:
+                    chunk = await asyncio.wait_for(self.reader.read(4096), timeout=1.0)
+                    if not chunk:
+                        break
+                    buffer += chunk
+                    if b'PeerlistComplete' in buffer:
+                        break
+                except asyncio.TimeoutError:
+                    break
+
+            # Parse peer events
+            events = buffer.decode('utf-8', errors='ignore').split('\r\n\r\n')
+            for event_text in events:
+                event = {}
+                for line in event_text.split('\r\n'):
+                    if ': ' in line:
+                        key, value = line.split(': ', 1)
+                        event[key.strip()] = value.strip()
+
+                if event.get('Event') == 'PeerEntry':
+                    peer = event.get('ObjectName', '')
+                    status = event.get('Status', '')
+                    # Extract extension number
+                    if peer.isdigit():
+                        peer_states[peer] = 'online' if 'OK' in status or 'Registered' in status else 'offline'
+
+            # Try PJSIP endpoints
+            command = "Action: PJSIPShowEndpoints\r\n\r\n"
+            self.writer.write(command.encode())
+            await self.writer.drain()
+
+            buffer = b""
+            timeout = time.time() + 3
+
+            while time.time() < timeout:
+                try:
+                    chunk = await asyncio.wait_for(self.reader.read(4096), timeout=1.0)
+                    if not chunk:
+                        break
+                    buffer += chunk
+                    if b'EndpointListComplete' in buffer:
+                        break
+                except asyncio.TimeoutError:
+                    break
+
+            events = buffer.decode('utf-8', errors='ignore').split('\r\n\r\n')
+            for event_text in events:
+                event = {}
+                for line in event_text.split('\r\n'):
+                    if ': ' in line:
+                        key, value = line.split(': ', 1)
+                        event[key.strip()] = value.strip()
+
+                if event.get('Event') == 'EndpointList':
+                    endpoint = event.get('ObjectName', '')
+                    device_state = event.get('DeviceState', '')
+                    if endpoint.isdigit():
+                        if 'Not in use' in device_state or 'Idle' in device_state:
+                            peer_states[endpoint] = 'online'
+                        elif 'Unavailable' in device_state or 'Invalid' in device_state:
+                            peer_states[endpoint] = 'offline'
+                        elif 'InUse' in device_state or 'Busy' in device_state:
+                            peer_states[endpoint] = 'busy'
+                        elif 'Ringing' in device_state:
+                            peer_states[endpoint] = 'ringing'
+
+            return peer_states
+        except Exception as e:
+            print(f"✗ Error getting extension states: {e}")
+            return {}
+
+    async def get_queue_paused_members(self):
+        """Get queue members that are paused"""
+        try:
+            command = "Action: QueueStatus\r\n\r\n"
+            self.writer.write(command.encode())
+            await self.writer.drain()
+
+            paused_extensions = set()
+            buffer = b""
+            timeout = time.time() + 3
+
+            while time.time() < timeout:
+                try:
+                    chunk = await asyncio.wait_for(self.reader.read(4096), timeout=1.0)
+                    if not chunk:
+                        break
+                    buffer += chunk
+                    if b'QueueStatusComplete' in buffer:
+                        break
+                except asyncio.TimeoutError:
+                    break
+
+            # Parse queue member events
+            events = buffer.decode('utf-8', errors='ignore').split('\r\n\r\n')
+            for event_text in events:
+                event = {}
+                for line in event_text.split('\r\n'):
+                    if ': ' in line:
+                        key, value = line.split(': ', 1)
+                        event[key.strip()] = value.strip()
+
+                if event.get('Event') == 'QueueMember':
+                    paused = event.get('Paused', '0')
+                    member_name = event.get('MemberName', '')
+                    location = event.get('Location', '')
+
+                    # Extract extension from member name or location
+                    ext = None
+                    if member_name.isdigit():
+                        ext = member_name
+                    else:
+                        # Try to extract from location like "PJSIP/1234"
+                        match = re.search(r'(?:PJSIP|SIP)/(\d+)', location)
+                        if match:
+                            ext = match.group(1)
+
+                    if ext and paused == '1':
+                        paused_extensions.add(ext)
+
+            return paused_extensions
+        except Exception as e:
+            print(f"✗ Error getting queue paused members: {e}")
+            return set()
+
     async def close(self):
         """Close AMI connection"""
         if self.writer:
@@ -232,7 +369,9 @@ def load_db_stats():
             SUM(missed_calls) as missed_calls,
             SUM(inbound_calls) as inbound_calls,
             SUM(outbound_calls) as outbound_calls,
-            SUM(internal_calls) as internal_calls
+            SUM(internal_calls) as internal_calls,
+            MIN(first_call_start) as first_call_start,
+            MAX(last_call_end) as last_call_end
         FROM (
             SELECT
                 SUBSTRING_INDEX(SUBSTRING_INDEX(channel, '/', -1), '-', 1) AS extension,
@@ -242,7 +381,9 @@ def load_db_stats():
                 SUM(CASE WHEN disposition IN ('NO ANSWER', 'NOANSWER') THEN 1 ELSE 0 END) as missed_calls,
                 SUM(CASE WHEN ({gateway_like}) AND dstchannel REGEXP '^(PJSIP|SIP)/.*' THEN 1 ELSE 0 END) as outbound_calls,
                 0 as inbound_calls,
-                SUM(CASE WHEN NOT ({gateway_like}) OR dstchannel NOT REGEXP '^(PJSIP|SIP)/.*' THEN 1 ELSE 0 END) as internal_calls
+                SUM(CASE WHEN NOT ({gateway_like}) OR dstchannel NOT REGEXP '^(PJSIP|SIP)/.*' THEN 1 ELSE 0 END) as internal_calls,
+                MIN(calldate) as first_call_start,
+                MAX(DATE_ADD(calldate, INTERVAL billsec SECOND)) as last_call_end
             FROM cdr
             WHERE calldate >= %s AND calldate < DATE_ADD(%s, INTERVAL 1 DAY)
             AND (channel LIKE 'PJSIP/%%%%' OR channel LIKE 'SIP/%%%%')
@@ -259,7 +400,9 @@ def load_db_stats():
                 SUM(CASE WHEN disposition IN ('NO ANSWER', 'NOANSWER') THEN 1 ELSE 0 END) as missed_calls,
                 0 as outbound_calls,
                 SUM(CASE WHEN ({gateway_like}) AND channel REGEXP '^(PJSIP|SIP)/.*' THEN 1 ELSE 0 END) as inbound_calls,
-                SUM(CASE WHEN NOT ({gateway_like}) OR channel NOT REGEXP '^(PJSIP|SIP)/.*' THEN 1 ELSE 0 END) as internal_calls
+                SUM(CASE WHEN NOT ({gateway_like}) OR channel NOT REGEXP '^(PJSIP|SIP)/.*' THEN 1 ELSE 0 END) as internal_calls,
+                MIN(calldate) as first_call_start,
+                MAX(DATE_ADD(calldate, INTERVAL billsec SECOND)) as last_call_end
             FROM cdr
             WHERE calldate >= %s AND calldate < DATE_ADD(%s, INTERVAL 1 DAY)
             AND (dstchannel LIKE 'PJSIP/%%%%' OR dstchannel LIKE 'SIP/%%%%')
@@ -277,6 +420,10 @@ def load_db_stats():
         for row in results:
             ext = row['extension'].replace('PJSIP/', '').replace('SIP/', '')
             if ext.isdigit():
+                # Convert datetime objects to strings for JSON serialization
+                first_call = row['first_call_start'].strftime('%H:%M:%S') if row.get('first_call_start') else ''
+                last_call = row['last_call_end'].strftime('%H:%M:%S') if row.get('last_call_end') else ''
+
                 extension_stats_db[ext] = {
                     'total_calls_today': int(row['total_calls'] or 0),
                     'answered_today': int(row['answered_calls'] or 0),
@@ -285,6 +432,8 @@ def load_db_stats():
                     'inbound_today': int(row['inbound_calls'] or 0),
                     'outbound_today': int(row['outbound_calls'] or 0),
                     'internal_today': int(row['internal_calls'] or 0),
+                    'first_call_start': first_call,
+                    'last_call_end': last_call,
                 }
 
         cursor.close()
@@ -295,14 +444,15 @@ def load_db_stats():
         print(f"⚠ Database stats load failed: {e}")
 
 
-def process_channels(channels):
+def process_channels(channels, extension_states=None, paused_extensions=None):
     """Process channel data into structured format"""
+    if extension_states is None:
+        extension_states = {}
+    if paused_extensions is None:
+        paused_extensions = set()
+
     # Group channels by duration (merge call legs)
     sip_channels = [ch for ch in channels if 'SIP/' in ch['channel'] or 'PJSIP/' in ch['channel']]
-
-    print(f"DEBUG: Total SIP channels: {len(sip_channels)}")
-    for ch in sip_channels:
-        print(f"  - {ch['channel']} | State: {ch['state']} | Duration: {ch['duration']}s | Context: {ch['context']}")
 
     call_groups = {}
     for ch in sip_channels:
@@ -313,20 +463,12 @@ def process_channels(channels):
 
     calls = []
     extension_kpis = {}
+    extensions_on_call = set()  # Track which extensions are currently on calls
 
     # Process each group
     for duration, group in call_groups.items():
-        print(f"DEBUG: Duration bucket {duration}s has {len(group)} channels")
         gateway_legs = [ch for ch in group if any(gw in ch['channel'].lower() for gw in GATEWAYS)]
         extension_legs = [ch for ch in group if not any(gw in ch['channel'].lower() for gw in GATEWAYS)]
-
-        print(f"  Gateway legs: {len(gateway_legs)}, Extension legs: {len(extension_legs)}")
-        if gateway_legs:
-            for gw in gateway_legs:
-                print(f"    GW: {gw['channel']}")
-        if extension_legs:
-            for ext in extension_legs:
-                print(f"    EXT: {ext['channel']}")
 
         if gateway_legs and extension_legs:
             # Bridged call (gateway + extension)
@@ -336,11 +478,6 @@ def process_channels(channels):
 
             is_outbound = any(p in ext_ch['context'].lower() for p in ['macro-dialout', 'outbound', 'dialout-trunk'])
             direction = 'outbound' if is_outbound else 'inbound'
-
-            print(f"  Bridged call detected:")
-            print(f"    Direction: {direction} (context: {ext_ch['context']})")
-            print(f"    Gateway: {gw_ch['channel']}")
-            print(f"    Extension: {ext_ch['channel']} -> ext#{ext}")
 
             if is_outbound:
                 calls.append({
@@ -368,14 +505,19 @@ def process_channels(channels):
             # Track extension KPI
             if ext and ext.isdigit():
                 if ext not in extension_kpis:
-                    extension_kpis[ext] = {'extension': ext, 'caller_id': ext_ch['calleridname'], 'active': 0, 'in': 0, 'out': 0, 'int': 0, 'status': 'available'}
+                    extension_kpis[ext] = {'extension': ext, 'caller_id': ext_ch['calleridname'], 'active': 0, 'in': 0, 'out': 0, 'int': 0, 'status': 'online', 'on_hold': False}
                 if direction == 'outbound':
                     extension_kpis[ext]['out'] += 1
                 else:
                     extension_kpis[ext]['in'] += 1
                 if ext_ch['state'] == 'Up':
                     extension_kpis[ext]['active'] += 1
-                    extension_kpis[ext]['status'] = 'on_call'
+                    extensions_on_call.add(ext)
+                    # Check if on hold (muted or no audio)
+                    if 'hold' in ext_ch['context'].lower() or ext_ch['state'] == 'Hold':
+                        extension_kpis[ext]['on_hold'] = True
+                elif ext_ch['state'] in ['Ringing', 'Ring']:
+                    extensions_on_call.add(ext)
 
         elif gateway_legs and not extension_legs:
             # Inbound call not yet bridged (in IVR, queue, ringing, etc.)
@@ -384,7 +526,6 @@ def process_channels(channels):
                 is_outbound_context = any(p in gw_ch['context'].lower() for p in ['macro-dialout', 'outbound', 'dialout-trunk'])
                 if not is_outbound_context:
                     # It's an inbound call in IVR/announcement/queue
-                    print(f"  Inbound call in IVR/Queue: {gw_ch['channel']} (context: {gw_ch['context']})")
                     calls.append({
                         'channel': gw_ch['channel'],
                         'dstchannel': '',
@@ -400,7 +541,6 @@ def process_channels(channels):
             # Extension-only calls (could be internal calls or ringing extensions)
             for ext_ch in extension_legs:
                 ext = extract_extension(ext_ch['channel'])
-                print(f"  Extension-only call: {ext_ch['channel']} (context: {ext_ch['context']})")
                 calls.append({
                     'channel': ext_ch['channel'],
                     'dstchannel': '',
@@ -415,34 +555,70 @@ def process_channels(channels):
                 # Track extension KPI for internal calls
                 if ext and ext.isdigit():
                     if ext not in extension_kpis:
-                        extension_kpis[ext] = {'extension': ext, 'caller_id': ext_ch['calleridname'], 'active': 0, 'in': 0, 'out': 0, 'int': 0, 'status': 'available'}
+                        extension_kpis[ext] = {'extension': ext, 'caller_id': ext_ch['calleridname'], 'active': 0, 'in': 0, 'out': 0, 'int': 0, 'status': 'online', 'on_hold': False}
                     extension_kpis[ext]['int'] += 1
                     if ext_ch['state'] == 'Up':
                         extension_kpis[ext]['active'] += 1
-                        extension_kpis[ext]['status'] = 'on_call'
+                        extensions_on_call.add(ext)
+                    elif ext_ch['state'] in ['Ringing', 'Ring']:
+                        extensions_on_call.add(ext)
 
-    # Merge with DB stats
+    # Merge with DB stats - add all extensions from database
     for ext in list(extension_stats_db.keys()):
         if ext not in extension_kpis:
-            extension_kpis[ext] = {'extension': ext, 'caller_id': ext, 'active': 0, 'in': 0, 'out': 0, 'int': 0, 'status': 'available'}
+            # Get registration status from extension_states
+            reg_status = extension_states.get(ext, 'offline')
+            extension_kpis[ext] = {'extension': ext, 'caller_id': ext, 'active': 0, 'in': 0, 'out': 0, 'int': 0, 'status': reg_status, 'on_hold': False}
 
     kpi_list = []
     for ext, stats in sorted(extension_kpis.items()):
         db = extension_stats_db.get(ext, {})
-        avg_dur = db.get('total_duration_today', 0) // db.get('total_calls_today', 1) if db.get('total_calls_today', 0) > 0 else 0
+        total_duration = db.get('total_duration_today', 0)
+        total_calls = db.get('total_calls_today', 0)
+        avg_dur = total_duration // total_calls if total_calls > 0 else 0
+
+        # Determine detailed status
+        detailed_status = 'offline'
+        if ext in paused_extensions:
+            detailed_status = 'paused'
+        elif stats.get('on_hold', False):
+            detailed_status = 'on-hold'
+        elif ext in extensions_on_call:
+            if stats['active'] > 0:
+                detailed_status = 'in-call'
+            else:
+                detailed_status = 'ringing'
+        elif ext in extension_states:
+            # Use registration status from AMI
+            peer_status = extension_states[ext]
+            if peer_status == 'busy':
+                detailed_status = 'busy'
+            elif peer_status == 'ringing':
+                detailed_status = 'ringing'
+            elif peer_status == 'online':
+                detailed_status = 'online'
+            else:
+                detailed_status = peer_status
+        elif stats['active'] == 0:
+            # No active calls and not in extension_states, assume offline
+            detailed_status = 'offline'
 
         kpi_list.append({
             'extension': stats['extension'],
             'caller_id': stats['caller_id'],
-            'status': stats['status'],
+            'status': detailed_status,
             'active_calls': stats['active'],
-            'total_calls_today': db.get('total_calls_today', 0),
+            'total_calls_today': total_calls,
             'inbound_today': db.get('inbound_today', 0) + stats['in'],
             'outbound_today': db.get('outbound_today', 0) + stats['out'],
             'internal_today': db.get('internal_today', 0) + stats['int'],
             'answered_today': db.get('answered_today', 0),
             'missed_today': db.get('missed_today', 0),
             'avg_duration': avg_dur,
+            'tht': total_duration,  # Total Handle Time
+            'aht': avg_dur,  # Average Handle Time (same as avg_duration)
+            'first_call_start': db.get('first_call_start', ''),
+            'last_call_end': db.get('last_call_end', ''),
         })
 
     return {
@@ -510,8 +686,11 @@ async def ami_monitor_loop():
                     await asyncio.sleep(10)
                     continue
 
-            # Get channels
+            # Get channels and extension states
             channels = await ami.get_channels()
+            extension_states = await ami.get_extension_states()
+            paused_extensions = await ami.get_queue_paused_members()
+
             current_count = len(channels)
 
             # Reload DB stats on hangup or periodically
@@ -523,7 +702,7 @@ async def ami_monitor_loop():
             last_channel_count = current_count
 
             # Process and broadcast
-            data = process_channels(channels)
+            data = process_channels(channels, extension_states, paused_extensions)
             await broadcast(data)
 
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Active: {data['active_calls']}, Channels: {data['total_channels']}, Extensions: {len(data['extension_kpis'])}, Clients: {len(connected_clients)}")
