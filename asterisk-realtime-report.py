@@ -216,68 +216,113 @@ class AsteriskAMI:
 
 def process_channels(channels):
     """Process raw channel data into call information"""
+    # Filter to SIP/PJSIP channels only
+    sip_channels = [ch for ch in channels if 'SIP/' in ch['channel'] or 'PJSIP/' in ch['channel']]
+
+    # Group channels by duration (same call has same/similar duration)
+    call_groups = {}
+    for ch in sip_channels:
+        duration_bucket = (ch['duration'] // 3) * 3  # Group by 3-second intervals
+        if duration_bucket not in call_groups:
+            call_groups[duration_bucket] = []
+        call_groups[duration_bucket].append(ch)
+
     calls = []
     active_count = 0
-    seen_calls = {}  # Track calls to deduplicate
 
-    for ch in channels:
-        channel = ch['channel']
-        context = ch['context'].lower()
-        extension = ch['extension']
-        bridged = ch.get('bridged', '')
+    # Process each group
+    for duration, group_channels in call_groups.items():
+        # Separate gateway and extension channels
+        gateway_legs = []
+        extension_legs = []
 
-        # Skip Local channels and other non-SIP channels (they're intermediary legs)
-        if not ('SIP/' in channel or 'PJSIP/' in channel):
-            continue
+        for ch in group_channels:
+            is_gateway = any(gw in ch['channel'].lower() for gw in GATEWAYS)
+            if is_gateway:
+                gateway_legs.append(ch)
+            else:
+                extension_legs.append(ch)
 
-        # Check if channel or bridged channel contains a configured gateway
-        channel_is_gateway = any(gw in channel.lower() for gw in GATEWAYS)
-        bridged_is_gateway = any(gw in bridged.lower() for gw in GATEWAYS) if bridged else False
+        # Determine call type and merge
+        if gateway_legs and extension_legs:
+            # Bridged call between gateway and extension
+            gateway_ch = gateway_legs[0]
+            extension_ch = extension_legs[0]
 
-        # Determine direction based on gateway position
-        if channel_is_gateway:
-            # Channel FROM gateway → INBOUND
-            direction = 'inbound'
-            print(f"DEBUG: {channel} FROM gateway → INBOUND")
-        elif bridged_is_gateway:
-            # Channel TO gateway (bridged to gateway) → OUTBOUND
-            direction = 'outbound'
-            print(f"DEBUG: {channel} TO gateway ({bridged}) → OUTBOUND")
-        else:
-            # No gateway involved → INTERNAL
-            direction = 'internal'
-            print(f"DEBUG: {channel} → INTERNAL")
+            # Check context to determine direction
+            ext_context = extension_ch['context'].lower()
+            is_outbound_context = any(p in ext_context for p in ['macro-dialout', 'outbound', 'dialout-trunk'])
 
-        # Only count active calls (Up state)
-        if ch['state'] == 'Up':
-            active_count += 1
+            if is_outbound_context:
+                # OUTBOUND: Show extension channel with destination from gateway
+                direction = 'outbound'
+                call_info = {
+                    'channel': extension_ch['channel'],
+                    'dstchannel': gateway_ch['channel'],  # Add destination channel
+                    'callerid': f"{extension_ch['calleridname']} <{extension_ch['callerid']}>",
+                    'extension': extension_ch['extension'],
+                    'destination': gateway_ch['extension'],  # Destination number
+                    'context': extension_ch['context'],
+                    'status': extension_ch['state'],
+                    'duration': extension_ch['duration'],
+                    'direction': direction,
+                }
+                print(f"DEBUG: Merged OUTBOUND call - {extension_ch['channel']} → {gateway_ch['channel']} ({gateway_ch['extension']})")
+            else:
+                # INBOUND: Show gateway channel
+                direction = 'inbound'
+                call_info = {
+                    'channel': gateway_ch['channel'],
+                    'dstchannel': extension_ch['channel'],  # Add destination channel
+                    'callerid': f"{gateway_ch['calleridname']} <{gateway_ch['callerid']}>",
+                    'extension': gateway_ch['extension'],
+                    'destination': extension_ch['extension'],  # Destination extension
+                    'context': gateway_ch['context'],
+                    'status': gateway_ch['state'],
+                    'duration': gateway_ch['duration'],
+                    'direction': direction,
+                }
+                print(f"DEBUG: Merged INBOUND call - {gateway_ch['channel']} → {extension_ch['channel']} (ext {extension_ch['extension']})")
 
-        # Create call info
-        call_info = {
-            'channel': channel,
-            'callerid': f"{ch['calleridname']} <{ch['callerid']}>",
-            'extension': ch['extension'],
-            'destination': ch['extension'],
-            'context': ch['context'],
-            'status': ch['state'],
-            'duration': ch['duration'],
-            'direction': direction,
-        }
+            if call_info['status'] == 'Up':
+                active_count += 1
+            calls.append(call_info)
 
-        # Deduplicate: Create a key based on callerid and duration (rounded to 5s intervals)
-        # This groups legs of the same call together
-        duration_bucket = (ch['duration'] // 5) * 5
-        call_key = f"{ch['callerid']}_{ch['extension']}_{duration_bucket}"
+        elif gateway_legs:
+            # Gateway only - INBOUND
+            for ch in gateway_legs:
+                call_info = {
+                    'channel': ch['channel'],
+                    'callerid': f"{ch['calleridname']} <{ch['callerid']}>",
+                    'extension': ch['extension'],
+                    'destination': ch['extension'],
+                    'context': ch['context'],
+                    'status': ch['state'],
+                    'duration': ch['duration'],
+                    'direction': 'inbound',
+                }
+                if ch['state'] == 'Up':
+                    active_count += 1
+                calls.append(call_info)
+                print(f"DEBUG: INBOUND call - {ch['channel']}")
 
-        # If we haven't seen this call, or if this is a gateway channel (prefer gateway over extension)
-        if call_key not in seen_calls:
-            seen_calls[call_key] = call_info
-        elif channel_is_gateway and not any(gw in seen_calls[call_key]['channel'].lower() for gw in GATEWAYS):
-            # Replace with gateway channel (more informative)
-            seen_calls[call_key] = call_info
-
-    # Convert deduplicated calls to list
-    calls = list(seen_calls.values())
+        elif extension_legs:
+            # Extension only - INTERNAL
+            for ch in extension_legs:
+                call_info = {
+                    'channel': ch['channel'],
+                    'callerid': f"{ch['calleridname']} <{ch['callerid']}>",
+                    'extension': ch['extension'],
+                    'destination': ch['extension'],
+                    'context': ch['context'],
+                    'status': ch['state'],
+                    'duration': ch['duration'],
+                    'direction': 'internal',
+                }
+                if ch['state'] == 'Up':
+                    active_count += 1
+                calls.append(call_info)
+                print(f"DEBUG: INTERNAL call - {ch['channel']}")
 
     return {
         'status': 'ok',
