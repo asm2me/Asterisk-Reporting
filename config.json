@@ -1,0 +1,40 @@
+{
+  "project": {
+    "name": "Asterisk CDR Reporting System",
+    "version": "1.0.0",
+    "description": "Real-time and historical CDR reporting for Asterisk PBX"
+  },
+  "database": {
+    "cdrDb": "asteriskcdrdb",
+    "cdrTable": "cdr"
+  },
+  "asterisk": {
+    "ami": {
+      "host": "127.0.0.1",
+      "port": 5038,
+      "username": "reporting",
+      "secret": "HfsobKSEPNQiiQWsFzzj"
+    },
+    "gateways": [
+      "PJSIP/we"
+    ],
+    "recordings": {
+      "baseDir": "/var/spool/asterisk/monitor"
+    }
+  },
+  "realtime": {
+    "updateInterval": 2,
+    "dataFile": "/var/www/html/supervisor2/data/asterisk-realtime-data.json",
+    "dbConfigFile": "/etc/amportal.conf",
+    "websocketHost": "0.0.0.0",
+    "websocketPort": 8765
+  },
+  "ui": {
+    "assetsUrl": "assets",
+    "defaultDateRange": "today",
+    "pagination": {
+      "defaultPerPage": 50,
+      "maxPerPage": 200
+    }
+  }
+}

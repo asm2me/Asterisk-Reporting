@@ -9,15 +9,21 @@ require_once __DIR__ . '/lib/acl.php';
 require_once __DIR__ . '/lib/recordings.php';
 require_once __DIR__ . '/lib/cdr.php';
 
+// Load project configuration from config.json
+$configFile = __DIR__ . '/config.json';
+$projectConfig = [];
+if (file_exists($configFile)) {
+    $configJson = file_get_contents($configFile);
+    $projectConfig = json_decode($configJson, true) ?: [];
+}
+
 $CONFIG = [
-    'cdrDb'      => getenv('CDR_DB') ?: 'asteriskcdrdb',
-    'cdrTable'   => getenv('CDR_TABLE') ?: 'cdr',
-    'recBaseDir' => getenv('REC_BASEDIR') ?: '/var/spool/asterisk/monitor',
+    'cdrDb'      => getenv('CDR_DB') ?: ($projectConfig['database']['cdrDb'] ?? 'asteriskcdrdb'),
+    'cdrTable'   => getenv('CDR_TABLE') ?: ($projectConfig['database']['cdrTable'] ?? 'cdr'),
+    'recBaseDir' => getenv('REC_BASEDIR') ?: ($projectConfig['asterisk']['recordings']['baseDir'] ?? '/var/spool/asterisk/monitor'),
     'usersFile'  => __DIR__ . '/config_users.json',
-    'assetsUrl'  => 'assets',
-    'gateways'   => [
-        'PJSIP/we',
-    ],
+    'assetsUrl'  => $projectConfig['ui']['assetsUrl'] ?? 'assets',
+    'gateways'   => $projectConfig['asterisk']['gateways'] ?? ['PJSIP/we'],
 ];
 
 startSecureSession();

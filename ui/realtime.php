@@ -124,6 +124,31 @@ use function buildUrl;
     </details>
   </div>
 
+  <!-- Extension KPIs -->
+  <div class="card tableWrap" style="margin-bottom:12px;">
+    <h3 style="margin:0 0 12px 0;font-size:16px;">📊 Live Extension KPIs</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Extension</th>
+          <th>Name</th>
+          <th>Status</th>
+          <th>Active Now</th>
+          <th>Today Total</th>
+          <th>Inbound</th>
+          <th>Outbound</th>
+          <th>Internal</th>
+          <th>Answered</th>
+          <th>Missed</th>
+          <th>Avg Duration</th>
+        </tr>
+      </thead>
+      <tbody id="kpisTable">
+        <tr><td colspan="11" style="color:var(--muted);padding:16px;text-align:center;">No extension data</td></tr>
+      </tbody>
+    </table>
+  </div>
+
   <!-- Active Calls Table -->
   <div class="card tableWrap">
     <h3 style="margin:0 0 12px 0;font-size:16px;">Active Calls</h3>
@@ -147,8 +172,8 @@ use function buildUrl;
 </div>
 
 <script>
-let lastUpdate = 0;
-let eventSource = null;
+let ws = null;
+let reconnectInterval = null;
 
 function formatDuration(seconds) {
   const m = Math.floor(seconds / 60);
@@ -182,7 +207,49 @@ function updateDisplay(data) {
   document.getElementById('inboundCalls').textContent = inbound;
   document.getElementById('outboundCalls').textContent = outbound;
 
-  // Update table
+  // Update Extension KPIs table
+  const kpisTable = document.getElementById('kpisTable');
+  const kpis = data.extension_kpis || [];
+  if (kpis.length === 0) {
+    kpisTable.innerHTML = '<tr><td colspan="11" style="color:var(--muted);padding:16px;text-align:center;">No extension data</td></tr>';
+  } else {
+    kpisTable.innerHTML = kpis.map(kpi => {
+      let statusClass, statusText;
+      if (kpi.status === 'on_call') {
+        statusClass = 'active';
+        statusText = 'On Call';
+      } else if (kpi.status === 'ringing') {
+        statusClass = 'ringing';
+        statusText = 'Ringing';
+      } else {
+        statusClass = 'ringing';
+        statusText = 'Available';
+      }
+
+      // Show today's totals with live calls in parentheses if active
+      const inboundDisplay = kpi.inbound_today + (kpi.inbound > 0 ? ` (+${kpi.inbound})` : '');
+      const outboundDisplay = kpi.outbound_today + (kpi.outbound > 0 ? ` (+${kpi.outbound})` : '');
+      const internalDisplay = kpi.internal_today + (kpi.internal > 0 ? ` (+${kpi.internal})` : '');
+
+      return `
+      <tr>
+        <td data-label="Extension"><strong>${escapeHtml(kpi.extension || '-')}</strong></td>
+        <td data-label="Name">${escapeHtml(kpi.caller_id || '-')}</td>
+        <td data-label="Status"><span class="status ${statusClass}">${statusText}</span></td>
+        <td data-label="Active Now"><strong style="color:var(--accent)">${kpi.active_calls || 0}</strong></td>
+        <td data-label="Today Total"><strong>${kpi.total_calls_today || 0}</strong></td>
+        <td data-label="Inbound" style="color:var(--ok)">${inboundDisplay}</td>
+        <td data-label="Outbound" style="color:var(--accent)">${outboundDisplay}</td>
+        <td data-label="Internal" style="color:var(--warn)">${internalDisplay}</td>
+        <td data-label="Answered" style="color:var(--ok)">${kpi.answered_today || 0}</td>
+        <td data-label="Missed" style="color:var(--bad)">${kpi.missed_today || 0}</td>
+        <td data-label="Avg Duration">${formatDuration(kpi.avg_duration || 0)}</td>
+      </tr>
+    `;
+    }).join('');
+  }
+
+  // Update Active Calls table
   const tbody = document.getElementById('callsTable');
   if (calls.length === 0) {
     tbody.innerHTML = '<tr><td colspan="6" style="color:var(--muted);padding:16px;text-align:center;">No active calls</td></tr>';
@@ -200,76 +267,76 @@ function updateDisplay(data) {
     `).join('');
   }
 
-  lastUpdate = Date.now();
   document.getElementById('updateStatus').textContent = 'Last Update: ' + new Date().toLocaleTimeString();
 }
 
-function pollData() {
-  console.log('Polling data at', new Date().toLocaleTimeString());
-  fetch('?action=getdata')
-    .then(res => {
-      console.log('Response status:', res.status, res.statusText);
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-      }
-      return res.json();
-    })
-    .then(data => {
-      console.log('Data received successfully:', data);
-      document.getElementById('connectionStatus').className = 'connection-status connected';
-      updateDisplay(data);
-    })
-    .catch(err => {
-      document.getElementById('connectionStatus').className = 'connection-status disconnected';
-      console.error('Error fetching realtime data:', err);
-      document.getElementById('updateStatus').textContent = 'Error: ' + err.message;
-      document.getElementById('debugData').textContent = 'Error: ' + err.message + '\n\nCheck browser console (F12) for details.';
-    });
-}
-
-function connectSSE() {
-  if (eventSource) {
-    eventSource.close();
+function connectWebSocket() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    return;
   }
 
-  console.log('Connecting to SSE stream...');
-  eventSource = new EventSource('?action=stream');
+  // Construct WebSocket URL - use current hostname with port 8765
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${wsProtocol}//${window.location.hostname}:8765`;
 
-  eventSource.addEventListener('connected', function(e) {
-    console.log('SSE connected');
-    document.getElementById('connectionStatus').className = 'connection-status connected';
-    document.getElementById('updateStatus').textContent = 'Connected via SSE - Waiting for updates';
-  });
+  console.log('Connecting to WebSocket:', wsUrl);
+  document.getElementById('updateStatus').textContent = 'Connecting to WebSocket...';
 
-  eventSource.addEventListener('update', function(e) {
-    const data = JSON.parse(e.data);
-    document.getElementById('connectionStatus').className = 'connection-status connected';
-    updateDisplay(data);
-  });
+  try {
+    ws = new WebSocket(wsUrl);
 
-  eventSource.addEventListener('error', function(e) {
-    console.error('SSE error:', e);
+    ws.onopen = function() {
+      console.log('✓ WebSocket connected');
+      document.getElementById('connectionStatus').className = 'connection-status connected';
+      document.getElementById('updateStatus').textContent = 'Connected - Waiting for updates';
+
+      // Clear reconnect interval if exists
+      if (reconnectInterval) {
+        clearInterval(reconnectInterval);
+        reconnectInterval = null;
+      }
+    };
+
+    ws.onmessage = function(event) {
+      try {
+        const data = JSON.parse(event.data);
+        document.getElementById('connectionStatus').className = 'connection-status connected';
+        updateDisplay(data);
+      } catch (e) {
+        console.error('Error parsing WebSocket message:', e);
+      }
+    };
+
+    ws.onerror = function(error) {
+      console.error('WebSocket error:', error);
+      document.getElementById('connectionStatus').className = 'connection-status disconnected';
+      document.getElementById('updateStatus').textContent = 'Connection Error';
+    };
+
+    ws.onclose = function() {
+      console.log('✗ WebSocket disconnected');
+      document.getElementById('connectionStatus').className = 'connection-status disconnected';
+      document.getElementById('updateStatus').textContent = 'Disconnected - Reconnecting...';
+
+      // Attempt to reconnect every 5 seconds
+      if (!reconnectInterval) {
+        reconnectInterval = setInterval(function() {
+          console.log('Attempting to reconnect...');
+          connectWebSocket();
+        }, 5000);
+      }
+    };
+
+  } catch (e) {
+    console.error('Failed to create WebSocket:', e);
     document.getElementById('connectionStatus').className = 'connection-status disconnected';
-    document.getElementById('updateStatus').textContent = 'Disconnected - Reconnecting...';
-
-    // Reconnect after 5 seconds
-    if (eventSource) {
-      eventSource.close();
-    }
-    setTimeout(connectSSE, 5000);
-  });
-
-  eventSource.onerror = function(e) {
-    console.error('SSE connection error:', e);
-    document.getElementById('connectionStatus').className = 'connection-status disconnected';
-    document.getElementById('updateStatus').textContent = 'Connection Error - Reconnecting...';
-  };
+    document.getElementById('updateStatus').textContent = 'Failed to connect';
+  }
 }
 
-// Use simple polling (more reliable than SSE)
-console.log('Starting realtime polling every 2 seconds...');
-pollData();
-setInterval(pollData, 2000);
+// Initialize WebSocket connection
+console.log('Starting WebSocket realtime connection...');
+connectWebSocket();
 </script>
 </body>
 </html>

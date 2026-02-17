@@ -1,0 +1,21 @@
+[Unit]
+Description=Asterisk Realtime WebSocket Service
+After=network.target asterisk.service mysql.service
+
+[Service]
+Type=simple
+User=asterisk
+Group=asterisk
+WorkingDirectory=/var/www/html/supervisor2
+ExecStart=/usr/bin/python3.6 /var/www/html/supervisor2/asterisk-realtime-websocket.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
