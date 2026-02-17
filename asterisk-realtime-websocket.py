@@ -293,6 +293,97 @@ class AsteriskAMI:
             print(f"✗ Error getting queue paused members: {e}")
             return set()
 
+    async def get_queue_status(self):
+        """Get detailed queue status including waiting calls and members"""
+        try:
+            command = "Action: QueueStatus\r\n\r\n"
+            self.writer.write(command.encode())
+            await self.writer.drain()
+
+            queues = {}
+            current_queue = None
+            buffer = b""
+            timeout = time.time() + 3
+
+            while time.time() < timeout:
+                try:
+                    chunk = await asyncio.wait_for(self.reader.read(4096), timeout=1.0)
+                    if not chunk:
+                        break
+                    buffer += chunk
+                    if b'QueueStatusComplete' in buffer:
+                        break
+                except asyncio.TimeoutError:
+                    break
+
+            # Parse events
+            events = buffer.decode('utf-8', errors='ignore').split('\r\n\r\n')
+            for event_text in events:
+                event = {}
+                for line in event_text.split('\r\n'):
+                    if ': ' in line:
+                        key, value = line.split(': ', 1)
+                        event[key.strip()] = value.strip()
+
+                event_type = event.get('Event', '')
+
+                if event_type == 'QueueParams':
+                    queue_name = event.get('Queue', '')
+                    if queue_name:
+                        current_queue = queue_name
+                        queues[queue_name] = {
+                            'name': queue_name,
+                            'max': int(event.get('Max', 0)),
+                            'calls_waiting': int(event.get('Calls', 0)),
+                            'hold_time': int(event.get('Holdtime', 0)),
+                            'talk_time': int(event.get('TalkTime', 0)),
+                            'service_level': int(event.get('ServiceLevel', 0)),
+                            'service_level_perf': float(event.get('ServicelevelPerf', 0)),
+                            'weight': int(event.get('Weight', 0)),
+                            'completed': int(event.get('Completed', 0)),
+                            'abandoned': int(event.get('Abandoned', 0)),
+                            'members': [],
+                            'entries': []
+                        }
+
+                elif event_type == 'QueueMember' and current_queue:
+                    member_name = event.get('MemberName', event.get('Name', ''))
+                    location = event.get('Location', '')
+
+                    # Extract extension
+                    ext = None
+                    if member_name.isdigit():
+                        ext = member_name
+                    else:
+                        match = re.search(r'(?:PJSIP|SIP)/(\d+)', location)
+                        if match:
+                            ext = match.group(1)
+
+                    queues[current_queue]['members'].append({
+                        'name': member_name,
+                        'extension': ext or member_name,
+                        'location': location,
+                        'status': event.get('Status', ''),
+                        'paused': event.get('Paused', '0') == '1',
+                        'calls_taken': int(event.get('CallsTaken', 0)),
+                        'last_call': int(event.get('LastCall', 0)),
+                        'in_call': event.get('InCall', '0') == '1',
+                    })
+
+                elif event_type == 'QueueEntry' and current_queue:
+                    queues[current_queue]['entries'].append({
+                        'position': int(event.get('Position', 0)),
+                        'channel': event.get('Channel', ''),
+                        'callerid': event.get('CallerIDNum', ''),
+                        'calleridname': event.get('CallerIDName', ''),
+                        'wait_time': int(event.get('Wait', 0)),
+                    })
+
+            return queues
+        except Exception as e:
+            print(f"✗ Error getting queue status: {e}")
+            return {}
+
     async def close(self):
         """Close AMI connection"""
         if self.writer:
@@ -326,6 +417,40 @@ def extract_extension(channel):
     """Extract extension number from channel name"""
     match = re.search(r'(?:PJSIP|SIP)/(\d+)', channel)
     return match.group(1) if match else None
+
+
+def process_queue_data(queue_status):
+    """Process queue data into structured format"""
+    queue_list = []
+
+    for queue_name, queue_info in sorted(queue_status.items()):
+        # Calculate metrics
+        total_members = len(queue_info['members'])
+        available_members = sum(1 for m in queue_info['members'] if not m['paused'] and not m['in_call'])
+        paused_members = sum(1 for m in queue_info['members'] if m['paused'])
+        busy_members = sum(1 for m in queue_info['members'] if m['in_call'])
+
+        # Get longest wait time
+        longest_wait = max((e['wait_time'] for e in queue_info['entries']), default=0)
+
+        queue_list.append({
+            'name': queue_info['name'],
+            'calls_waiting': queue_info['calls_waiting'],
+            'longest_wait': longest_wait,
+            'total_members': total_members,
+            'available_members': available_members,
+            'paused_members': paused_members,
+            'busy_members': busy_members,
+            'completed': queue_info['completed'],
+            'abandoned': queue_info['abandoned'],
+            'avg_hold_time': queue_info['hold_time'],
+            'avg_talk_time': queue_info['talk_time'],
+            'service_level_perf': queue_info['service_level_perf'],
+            'waiting_calls': queue_info['entries'],
+            'members': queue_info['members'],
+        })
+
+    return queue_list
 
 
 def load_db_stats():
@@ -689,6 +814,7 @@ async def ami_monitor_loop():
             # Get channels and extension states
             channels = await ami.get_channels()
             extension_states = await ami.get_extension_states()
+            queue_status = await ami.get_queue_status()
             paused_extensions = await ami.get_queue_paused_members()
 
             current_count = len(channels)
@@ -703,6 +829,10 @@ async def ami_monitor_loop():
 
             # Process and broadcast
             data = process_channels(channels, extension_states, paused_extensions)
+
+            # Add queue data
+            data['queues'] = process_queue_data(queue_status)
+
             await broadcast(data)
 
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Active: {data['active_calls']}, Channels: {data['total_channels']}, Extensions: {len(data['extension_kpis'])}, Clients: {len(connected_clients)}")

@@ -94,8 +94,9 @@ use function buildUrl;
       </div>
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;">
-      <a class="btn" href="index.php">📞 CDR Report</a>
-      <a class="btn" href="kpi.php">📊 Extension KPIs</a>
+      <a class="btn" href="index.php">📊 CDR Report</a>
+      <a class="btn" href="realtime-queues.php">📞 Queue Realtime</a>
+      <a class="btn" href="kpi.php">📈 Extension KPIs</a>
       <?php if ($isAdmin): ?><a class="btn" href="?page=users">👤 User Management</a><?php endif; ?>
       <a class="btn danger" href="<?= h(buildUrl(['action'=>'logout'])) ?>">🚪 Logout</a>
     </div>
