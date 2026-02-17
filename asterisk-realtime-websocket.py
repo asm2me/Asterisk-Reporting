@@ -300,6 +300,10 @@ def process_channels(channels):
     # Group channels by duration (merge call legs)
     sip_channels = [ch for ch in channels if 'SIP/' in ch['channel'] or 'PJSIP/' in ch['channel']]
 
+    print(f"DEBUG: Total SIP channels: {len(sip_channels)}")
+    for ch in sip_channels:
+        print(f"  - {ch['channel']} | State: {ch['state']} | Duration: {ch['duration']}s | Context: {ch['context']}")
+
     call_groups = {}
     for ch in sip_channels:
         bucket = (ch['duration'] // 3) * 3
@@ -312,17 +316,31 @@ def process_channels(channels):
 
     # Process each group
     for duration, group in call_groups.items():
+        print(f"DEBUG: Duration bucket {duration}s has {len(group)} channels")
         gateway_legs = [ch for ch in group if any(gw in ch['channel'].lower() for gw in GATEWAYS)]
         extension_legs = [ch for ch in group if not any(gw in ch['channel'].lower() for gw in GATEWAYS)]
 
+        print(f"  Gateway legs: {len(gateway_legs)}, Extension legs: {len(extension_legs)}")
+        if gateway_legs:
+            for gw in gateway_legs:
+                print(f"    GW: {gw['channel']}")
+        if extension_legs:
+            for ext in extension_legs:
+                print(f"    EXT: {ext['channel']}")
+
         if gateway_legs and extension_legs:
-            # Bridged call
+            # Bridged call (gateway + extension)
             gw_ch = gateway_legs[0]
             ext_ch = extension_legs[0]
             ext = extract_extension(ext_ch['channel'])
 
             is_outbound = any(p in ext_ch['context'].lower() for p in ['macro-dialout', 'outbound', 'dialout-trunk'])
             direction = 'outbound' if is_outbound else 'inbound'
+
+            print(f"  Bridged call detected:")
+            print(f"    Direction: {direction} (context: {ext_ch['context']})")
+            print(f"    Gateway: {gw_ch['channel']}")
+            print(f"    Extension: {ext_ch['channel']} -> ext#{ext}")
 
             if is_outbound:
                 calls.append({
@@ -358,6 +376,50 @@ def process_channels(channels):
                 if ext_ch['state'] == 'Up':
                     extension_kpis[ext]['active'] += 1
                     extension_kpis[ext]['status'] = 'on_call'
+
+        elif gateway_legs and not extension_legs:
+            # Inbound call not yet bridged (in IVR, queue, ringing, etc.)
+            for gw_ch in gateway_legs:
+                # Check if it's an outbound context (unlikely for gateway-only, but check anyway)
+                is_outbound_context = any(p in gw_ch['context'].lower() for p in ['macro-dialout', 'outbound', 'dialout-trunk'])
+                if not is_outbound_context:
+                    # It's an inbound call in IVR/announcement/queue
+                    print(f"  Inbound call in IVR/Queue: {gw_ch['channel']} (context: {gw_ch['context']})")
+                    calls.append({
+                        'channel': gw_ch['channel'],
+                        'dstchannel': '',
+                        'callerid': f"{gw_ch['calleridname']} <{gw_ch['callerid']}>",
+                        'extension': gw_ch['extension'],
+                        'destination': gw_ch['context'],  # Show context as destination
+                        'status': gw_ch['state'],
+                        'duration': gw_ch['duration'],
+                        'direction': 'inbound',
+                    })
+
+        elif extension_legs and not gateway_legs:
+            # Extension-only calls (could be internal calls or ringing extensions)
+            for ext_ch in extension_legs:
+                ext = extract_extension(ext_ch['channel'])
+                print(f"  Extension-only call: {ext_ch['channel']} (context: {ext_ch['context']})")
+                calls.append({
+                    'channel': ext_ch['channel'],
+                    'dstchannel': '',
+                    'callerid': f"{ext_ch['calleridname']} <{ext_ch['callerid']}>",
+                    'extension': ext_ch['extension'],
+                    'destination': ext_ch['context'],
+                    'status': ext_ch['state'],
+                    'duration': ext_ch['duration'],
+                    'direction': 'internal',
+                })
+
+                # Track extension KPI for internal calls
+                if ext and ext.isdigit():
+                    if ext not in extension_kpis:
+                        extension_kpis[ext] = {'extension': ext, 'caller_id': ext_ch['calleridname'], 'active': 0, 'in': 0, 'out': 0, 'int': 0, 'status': 'available'}
+                    extension_kpis[ext]['int'] += 1
+                    if ext_ch['state'] == 'Up':
+                        extension_kpis[ext]['active'] += 1
+                        extension_kpis[ext]['status'] = 'on_call'
 
     # Merge with DB stats
     for ext in list(extension_stats_db.keys()):
