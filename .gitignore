@@ -1,0 +1,92 @@
+# Sensitive configuration files
+config.json
+config_users.json
+lib/db_creds.php
+
+# Runtime data
+data/
+*.json.bak
+
+# Logs
+*.log
+logs/
+
+# Session files
+sessions/
+
+# Recordings (if stored in repo)
+recordings/
+monitor/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environment
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Node modules (if any)
+node_modules/
+
+# Compiled files
+*.o
+*.a
+*.so
+
+# Vendor libraries that should be downloaded
+chart.umd.min.js
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# SSL certificates
+*.pem
+*.key
+*.crt
+*.csr
+
+# Database dumps
+*.sql
+*.sqlite
+*.db
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
