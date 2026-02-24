@@ -158,7 +158,7 @@ function fetchSummary(array $CONFIG, PDO $pdo, array $me, array $filters): array
     FROM (
       SELECT
         COALESCE(linkedid, uniqueid) AS grp_id,
-        MAX(CASE WHEN dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's'
+        MAX(CASE WHEN disposition = 'ANSWERED' AND billsec > 0
                  THEN 1 ELSE 0 END)                                      AS any_bridged,
         MAX(CASE WHEN dcontext LIKE '%ext-queues%'
                  THEN 1 ELSE 0 END)                                      AS any_queue,
@@ -301,7 +301,7 @@ function fetchPageRows(array $CONFIG, PDO $pdo, array $me, array $filters): arra
         SELECT
             COALESCE(linkedid, uniqueid) AS grp_id,
             COUNT(*) AS leg_count,
-            MAX(CASE WHEN dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's'
+            MAX(CASE WHEN disposition = 'ANSWERED' AND billsec > 0
                      THEN 1 ELSE 0 END) AS any_bridged,
             MAX(CASE WHEN dcontext LIKE '%ext-queues%'
                      THEN 1 ELSE 0 END) AS any_queue,
@@ -543,7 +543,7 @@ function fetchExtensionKPIs(array $CONFIG, PDO $pdo, array $me, array $filters):
         SELECT
             src                                                               AS extension,
             COALESCE(linkedid, uniqueid)                                      AS grp_id,
-            MAX(CASE WHEN dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's'
+            MAX(CASE WHEN disposition = 'ANSWERED' AND billsec > 0
                      THEN 1 ELSE 0 END)                                      AS any_bridged,
             MAX(CASE WHEN dcontext LIKE '%ext-queues%'
                      THEN 1 ELSE 0 END)                                      AS any_queue,
@@ -551,7 +551,7 @@ function fetchExtensionKPIs(array $CONFIG, PDO $pdo, array $me, array $filters):
             MAX(CASE WHEN disposition = 'FAILED' THEN 1 ELSE 0 END)          AS is_failed,
             SUM(billsec)                                                      AS grp_billsec,
             SUM(duration)                                                     AS grp_duration,
-            SUM(CASE WHEN dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's'
+            SUM(CASE WHEN disposition = 'ANSWERED' AND billsec > 0
                      THEN (duration - billsec) ELSE 0 END)                   AS grp_wait
         FROM `{$cdrTable}`
         WHERE {$whereSql}
