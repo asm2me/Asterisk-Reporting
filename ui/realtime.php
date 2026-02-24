@@ -122,14 +122,6 @@ use function buildUrl;
     </div>
   </div>
 
-  <!-- Debug Info -->
-  <div class="card" style="margin-bottom:12px;">
-    <details>
-      <summary style="cursor:pointer;font-weight:600;">🔍 Debug Info (click to expand)</summary>
-      <pre id="debugData" style="margin-top:10px;font-size:11px;max-height:300px;overflow:auto;background:rgba(0,0,0,.3);padding:10px;border-radius:6px;white-space:pre-wrap;">Loading...</pre>
-    </details>
-  </div>
-
   <!-- Extension KPIs -->
   <div class="card tableWrap" style="margin-bottom:12px;">
     <h3 style="margin:0 0 12px 0;font-size:16px;">📊 Live Extension KPIs</h3>
@@ -212,9 +204,6 @@ function escapeHtml(str) {
 function updateDisplay(data) {
   data = filterByPermissions(data);
   console.log('Received data:', data);
-
-  // Update debug display
-  document.getElementById('debugData').textContent = JSON.stringify(data, null, 2);
 
   // Update summary cards
   document.getElementById('activeCalls').textContent = data.active_calls || 0;
