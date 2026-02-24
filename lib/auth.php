@@ -44,7 +44,11 @@ function requireSessionLogin(array $usersData): array {
         } else {
             $rec = $usersData['users'][$u];
             $hash = $rec['password_hash'] ?? '';
-            if (!is_string($hash) || $hash === '' || !password_verify($p, $hash)) {
+            $noPassword = !is_string($hash) || $hash === '';
+            $isAdminUser = !empty($rec['is_admin']);
+            // If no password hash is set and the user is an admin, allow "admin" as default password
+            $defaultOk = $noPassword && $isAdminUser && $p === 'admin';
+            if (!$defaultOk && ($noPassword || !password_verify($p, $hash))) {
                 $err = 'Invalid username or password';
             } else {
                 session_regenerate_id(true);
