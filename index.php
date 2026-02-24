@@ -120,6 +120,11 @@ if ($format === 'csv') {
     exit;
 }
 
+if ($format === 'excel') {
+    streamExcel($CONFIG, $pdo, $me, $filters);
+    exit;
+}
+
 $rows = fetchPageRows($CONFIG, $pdo, $me, $filters);
 
 // Pre-fetch all call legs for this page in one query (fixes N+1 problem)

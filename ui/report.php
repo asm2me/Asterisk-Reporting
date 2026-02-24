@@ -168,6 +168,7 @@ $gateway = (string)($filters['gateway'] ?? '');
       <a class="btn" href="kpi.php">📊 Extension KPIs</a>
       <?php if ($isAdmin): ?><a class="btn" href="<?= h(buildUrl(['page'=>'users'])) ?>">👤 User Management</a><?php endif; ?>
       <a class="btn" href="<?= h(buildUrl(['format'=>'csv','page'=>1])) ?>">⬇ Export CSV</a>
+      <a class="btn" href="<?= h(buildUrl(['format'=>'excel','page'=>1])) ?>">📊 Export Excel</a>
       <a class="btn danger" href="<?= h(buildUrl(['action'=>'logout'])) ?>">🚪 Logout</a>
     </div>
   </div>

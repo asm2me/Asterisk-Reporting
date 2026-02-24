@@ -142,19 +142,39 @@ function fetchSummary(array $CONFIG, PDO $pdo, array $me, array $filters): array
     $whereSql = buildWhere($CONFIG, $me, $filters, $params);
     $cdrTable = $CONFIG['cdrTable'];
 
+    // Group by linkedid first so each multi-leg call counts as ONE call.
+    // A queue call with 3 CDR legs would otherwise inflate answered/total.
     $sumSql = "
     SELECT
-      COUNT(*) AS total,
-      SUM(CASE WHEN (dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's') THEN 1 ELSE 0 END) AS answered,
-      SUM(CASE WHEN disposition='BUSY' THEN 1 ELSE 0 END) AS busy,
-      SUM(CASE WHEN (dstchannel IS NULL OR dstchannel = '' OR dst = 's') AND (dcontext NOT LIKE '%ext-queues%' OR dcontext IS NULL) THEN 1 ELSE 0 END) AS missed,
-      SUM(CASE WHEN (dstchannel IS NULL OR dstchannel = '' OR dst = 's') AND dcontext LIKE '%ext-queues%' THEN 1 ELSE 0 END) AS abandoned,
-      SUM(CASE WHEN disposition IN ('NO ANSWER','NOANSWER') THEN 1 ELSE 0 END) AS noanswer,
-      SUM(CASE WHEN disposition='FAILED' THEN 1 ELSE 0 END) AS failed,
-      SUM(CASE WHEN disposition IN ('CONGESTION','CONGESTED') THEN 1 ELSE 0 END) AS congested,
-      SUM(billsec) AS total_billsec
-    FROM `{$cdrTable}`
-    WHERE {$whereSql}
+      COUNT(*)                                                             AS total,
+      SUM(any_bridged)                                                     AS answered,
+      SUM(is_busy)                                                         AS busy,
+      SUM(CASE WHEN any_bridged = 0 AND any_queue = 0 THEN 1 ELSE 0 END)  AS missed,
+      SUM(CASE WHEN any_bridged = 0 AND any_queue = 1 THEN 1 ELSE 0 END)  AS abandoned,
+      SUM(is_noanswer)                                                     AS noanswer,
+      SUM(is_failed)                                                       AS failed,
+      SUM(is_congested)                                                    AS congested,
+      SUM(grp_billsec)                                                     AS total_billsec
+    FROM (
+      SELECT
+        COALESCE(linkedid, uniqueid) AS grp_id,
+        MAX(CASE WHEN dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's'
+                 THEN 1 ELSE 0 END)                                      AS any_bridged,
+        MAX(CASE WHEN dcontext LIKE '%ext-queues%'
+                 THEN 1 ELSE 0 END)                                      AS any_queue,
+        MAX(CASE WHEN disposition = 'BUSY'
+                 THEN 1 ELSE 0 END)                                      AS is_busy,
+        MAX(CASE WHEN disposition IN ('NO ANSWER','NOANSWER')
+                 THEN 1 ELSE 0 END)                                      AS is_noanswer,
+        MAX(CASE WHEN disposition = 'FAILED'
+                 THEN 1 ELSE 0 END)                                      AS is_failed,
+        MAX(CASE WHEN disposition IN ('CONGESTION','CONGESTED')
+                 THEN 1 ELSE 0 END)                                      AS is_congested,
+        SUM(billsec)                                                       AS grp_billsec
+      FROM `{$cdrTable}`
+      WHERE {$whereSql}
+      GROUP BY COALESCE(linkedid, uniqueid)
+    ) AS grp
     ";
 
     $st = $pdo->prepare($sumSql);
@@ -494,26 +514,46 @@ function fetchExtensionKPIs(array $CONFIG, PDO $pdo, array $me, array $filters):
     }
     $gwExcludeSql = $gwExcludeConds ? ('AND ' . implode(' AND ', $gwExcludeConds)) : '';
 
+    // Two-level grouping: first collapse multi-leg calls into one row per
+    // (extension, linkedid), then aggregate per extension.
+    // This prevents a single multi-leg call inflating answered/total counts.
     $sql = "
     SELECT
-        src as extension,
-        COUNT(*) as total_calls,
-        SUM(CASE WHEN (dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's') THEN 1 ELSE 0 END) as answered,
-        SUM(CASE WHEN (dstchannel IS NULL OR dstchannel = '' OR dst = 's') AND (dcontext NOT LIKE '%ext-queues%' OR dcontext IS NULL) THEN 1 ELSE 0 END) as missed,
-        SUM(CASE WHEN (dstchannel IS NULL OR dstchannel = '' OR dst = 's') AND dcontext LIKE '%ext-queues%' THEN 1 ELSE 0 END) as abandoned,
-        SUM(CASE WHEN disposition='BUSY' THEN 1 ELSE 0 END) as busy,
-        SUM(CASE WHEN disposition='FAILED' THEN 1 ELSE 0 END) as failed,
-        SUM(billsec) as total_billsec,
-        SUM(duration) as total_duration,
-        AVG(CASE WHEN (dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's') THEN billsec ELSE NULL END) as avg_talk_time,
-        AVG(CASE WHEN (dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's') THEN (duration - billsec) ELSE NULL END) as avg_wait_time,
-        MAX(billsec) as max_call_duration,
-        MIN(CASE WHEN (dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's') AND billsec > 0 THEN billsec ELSE NULL END) as min_call_duration
-    FROM `{$cdrTable}`
-    WHERE {$whereSql}
-      AND src REGEXP '^[0-9]+$'
-      {$gwExcludeSql}
-    GROUP BY src
+        extension,
+        COUNT(*)                                                              AS total_calls,
+        SUM(any_bridged)                                                      AS answered,
+        SUM(CASE WHEN any_bridged = 0 AND any_queue = 0 THEN 1 ELSE 0 END)   AS missed,
+        SUM(CASE WHEN any_bridged = 0 AND any_queue = 1 THEN 1 ELSE 0 END)   AS abandoned,
+        SUM(is_busy)                                                          AS busy,
+        SUM(is_failed)                                                        AS failed,
+        SUM(grp_billsec)                                                      AS total_billsec,
+        SUM(grp_duration)                                                     AS total_duration,
+        AVG(CASE WHEN any_bridged = 1 THEN grp_billsec  ELSE NULL END)       AS avg_talk_time,
+        AVG(CASE WHEN any_bridged = 1 THEN grp_wait     ELSE NULL END)       AS avg_wait_time,
+        MAX(grp_billsec)                                                      AS max_call_duration,
+        MIN(CASE WHEN any_bridged = 1 AND grp_billsec > 0
+                 THEN grp_billsec ELSE NULL END)                              AS min_call_duration
+    FROM (
+        SELECT
+            src                                                               AS extension,
+            COALESCE(linkedid, uniqueid)                                      AS grp_id,
+            MAX(CASE WHEN dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's'
+                     THEN 1 ELSE 0 END)                                      AS any_bridged,
+            MAX(CASE WHEN dcontext LIKE '%ext-queues%'
+                     THEN 1 ELSE 0 END)                                      AS any_queue,
+            MAX(CASE WHEN disposition = 'BUSY'  THEN 1 ELSE 0 END)           AS is_busy,
+            MAX(CASE WHEN disposition = 'FAILED' THEN 1 ELSE 0 END)          AS is_failed,
+            SUM(billsec)                                                      AS grp_billsec,
+            SUM(duration)                                                     AS grp_duration,
+            SUM(CASE WHEN dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's'
+                     THEN (duration - billsec) ELSE 0 END)                   AS grp_wait
+        FROM `{$cdrTable}`
+        WHERE {$whereSql}
+          AND src REGEXP '^[0-9]+$'
+          {$gwExcludeSql}
+        GROUP BY src, COALESCE(linkedid, uniqueid)
+    ) AS ext_grp
+    GROUP BY extension
     ORDER BY total_calls DESC
     ";
 
@@ -531,5 +571,196 @@ function fetchExtensionKPIs(array $CONFIG, PDO $pdo, array $me, array $filters):
     } catch (Throwable $e) {
         return [];
     }
+}
+
+// ---------------------------------------------------------------------------
+// Excel (XLSX) export helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a 0-based column index to an Excel column letter (A, B, … Z, AA …).
+ */
+function xlsxCol(int $idx): string {
+    $s = '';
+    for ($n = $idx + 1; $n > 0; $n = intdiv($n, 26)) {
+        $s = chr(65 + (--$n % 26)) . $s;
+    }
+    return $s;
+}
+
+/**
+ * Build and stream a minimal XLSX file.
+ * $rows is an array of arrays; values may be int/float (→ numeric cell) or
+ * string (→ inline-string cell).  Header row is rendered bold.
+ */
+function streamXlsx(array $headers, array $rows, string $filename): void {
+    $tmp = tempnam(sys_get_temp_dir(), 'cdrxlsx');
+    $zip = new ZipArchive();
+    if ($zip->open($tmp, ZipArchive::OVERWRITE) !== true) {
+        http_response_code(500); echo 'Cannot create export file'; exit;
+    }
+
+    $zip->addFromString('[Content_Types].xml',
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'.
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'.
+        '<Default Extension="xml"  ContentType="application/xml"/>'.
+        '<Override PartName="/xl/workbook.xml"           ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'.
+        '<Override PartName="/xl/worksheets/sheet1.xml"  ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'.
+        '<Override PartName="/xl/styles.xml"             ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'.
+        '</Types>');
+
+    $zip->addFromString('_rels/.rels',
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'.
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'.
+        '</Relationships>');
+
+    $zip->addFromString('xl/workbook.xml',
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'.
+        '          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'.
+        '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>'.
+        '</workbook>');
+
+    $zip->addFromString('xl/_rels/workbook.xml.rels',
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'.
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'.
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"   Target="styles.xml"/>'.
+        '</Relationships>');
+
+    // Minimal styles: index 0 = normal, index 1 = bold header
+    $zip->addFromString('xl/styles.xml',
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
+        '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'.
+        '<fonts count="2">'.
+          '<font><sz val="11"/><name val="Calibri"/></font>'.
+          '<font><b/><sz val="11"/><name val="Calibri"/></font>'.
+        '</fonts>'.
+        '<fills count="2">'.
+          '<fill><patternFill patternType="none"/></fill>'.
+          '<fill><patternFill patternType="gray125"/></fill>'.
+        '</fills>'.
+        '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'.
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'.
+        '<cellXfs count="2">'.
+          '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'.
+          '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'.
+        '</cellXfs>'.
+        '</styleSheet>');
+
+    // Build worksheet using inline strings (no shared-strings pre-pass needed)
+    $ws  = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+    $ws .= '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>';
+
+    // Header row (bold, style index 1)
+    $ws .= '<row r="1">';
+    foreach ($headers as $ci => $h) {
+        $col = xlsxCol($ci);
+        $esc = htmlspecialchars((string)$h, ENT_XML1, 'UTF-8');
+        $ws .= "<c r=\"{$col}1\" t=\"inlineStr\" s=\"1\"><is><t>{$esc}</t></is></c>";
+    }
+    $ws .= '</row>';
+
+    // Data rows
+    $rowNum = 2;
+    foreach ($rows as $row) {
+        $ws .= "<row r=\"{$rowNum}\">";
+        foreach (array_values($row) as $ci => $val) {
+            $col = xlsxCol($ci);
+            // Store integers/floats as numeric cells; everything else as string
+            if (is_int($val) || is_float($val)) {
+                $ws .= "<c r=\"{$col}{$rowNum}\"><v>" . $val . "</v></c>";
+            } else {
+                $esc = htmlspecialchars((string)($val ?? ''), ENT_XML1, 'UTF-8');
+                $ws .= "<c r=\"{$col}{$rowNum}\" t=\"inlineStr\"><is><t>{$esc}</t></is></c>";
+            }
+        }
+        $ws .= '</row>';
+        $rowNum++;
+    }
+    $ws .= '</sheetData></worksheet>';
+
+    $zip->addFromString('xl/worksheets/sheet1.xml', $ws);
+    $zip->close();
+
+    header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    header('Content-Disposition: attachment; filename="' . rawurlencode($filename) . '"');
+    header('Content-Length: ' . filesize($tmp));
+    readfile($tmp);
+    @unlink($tmp);
+    exit;
+}
+
+/**
+ * Export CDR rows as XLSX (same scope as CSV export, no pagination).
+ */
+function streamExcel(array $CONFIG, PDO $pdo, array $me, array $filters): void {
+    $params = [];
+    $whereSql = buildWhere($CONFIG, $me, $filters, $params);
+    $cdrTable = $CONFIG['cdrTable'];
+    $sort = (string)($filters['sort'] ?? 'calldate');
+    $dir  = (string)($filters['dir']  ?? 'desc');
+
+    $sql = "SELECT calldate, clid, src, dst, channel, dstchannel, dcontext, disposition, duration, billsec, uniqueid, recordingfile
+            FROM `{$cdrTable}` WHERE {$whereSql} ORDER BY {$sort} {$dir}";
+
+    $st = $pdo->prepare($sql);
+    foreach ($params as $k => $v) {
+        if (is_int($v)) $st->bindValue($k, $v, PDO::PARAM_INT);
+        else             $st->bindValue($k, (string)$v, PDO::PARAM_STR);
+    }
+    $st->execute();
+
+    $headers = ['Call Date','CLID','Src','Dst','Channel','Dst Channel','Context','Disposition','Duration','Billsec','UniqueID','Recording'];
+    $rows = [];
+    while ($r = $st->fetch()) {
+        $rows[] = [
+            (string)($r['calldate']     ?? ''),
+            (string)($r['clid']         ?? ''),
+            (string)($r['src']          ?? ''),
+            (string)($r['dst']          ?? ''),
+            (string)($r['channel']      ?? ''),
+            (string)($r['dstchannel']   ?? ''),
+            (string)($r['dcontext']     ?? ''),
+            (string)($r['disposition']  ?? ''),
+            (int)   ($r['duration']     ?? 0),
+            (int)   ($r['billsec']      ?? 0),
+            (string)($r['uniqueid']     ?? ''),
+            (string)($r['recordingfile']?? ''),
+        ];
+    }
+
+    $from = (string)$filters['from'];
+    $to   = (string)$filters['to'];
+    streamXlsx($headers, $rows, "cdr_{$from}_to_{$to}.xlsx");
+}
+
+/**
+ * Export KPI data array as XLSX.
+ */
+function streamExcelKpis(array $kpiData, string $from, string $to): void {
+    $headers = ['Extension','Total Calls','Answered','Missed','Abandoned','Busy','Failed','Answer Rate %','Avg Wait (sec)','Avg Talk (sec)','Total Talk (sec)'];
+    $rows = [];
+    foreach ($kpiData as $ext) {
+        $total  = (int)($ext['total_calls'] ?? 0);
+        $ans    = (int)($ext['answered']    ?? 0);
+        $rate   = $total > 0 ? round(($ans / $total) * 100, 1) : 0.0;
+        $rows[] = [
+            (string)($ext['extension']    ?? ''),
+            $total,
+            $ans,
+            (int)($ext['missed']          ?? 0),
+            (int)($ext['abandoned']       ?? 0),
+            (int)($ext['busy']            ?? 0),
+            (int)($ext['failed']          ?? 0),
+            $rate,
+            (int)($ext['avg_wait_time']   ?? 0),
+            (int)($ext['avg_talk_time']   ?? 0),
+            (int)($ext['total_billsec']   ?? 0),
+        ];
+    }
+    streamXlsx($headers, $rows, "kpi_{$from}_to_{$to}.xlsx");
 }
 

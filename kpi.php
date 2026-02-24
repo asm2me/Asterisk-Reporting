@@ -57,6 +57,11 @@ $filters = [
 /* Fetch Extension KPIs */
 $kpiData = fetchExtensionKPIs($CONFIG, $pdo, $me, $filters);
 
+if ($format === 'excel') {
+    streamExcelKpis($kpiData, $from, $to);
+    exit;
+}
+
 /* Calculate totals */
 $totalCalls = 0;
 $totalAnswered = 0;
