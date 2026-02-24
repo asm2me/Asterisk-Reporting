@@ -181,6 +181,19 @@ use function buildUrl;
 </div>
 
 <script>
+const IS_ADMIN = <?= $isAdmin ? 'true' : 'false' ?>;
+const ALLOWED_EXTS = <?= json_encode(array_fill_keys((array)($me['extensions'] ?? []), true)) ?>;
+
+function filterByPermissions(data) {
+  if (IS_ADMIN) return data;
+  const d = Object.assign({}, data);
+  d.calls = (d.calls || []).filter(c => ALLOWED_EXTS.hasOwnProperty(String(c.extension || '')));
+  d.extension_kpis = (d.extension_kpis || []).filter(k => ALLOWED_EXTS.hasOwnProperty(String(k.extension || '')));
+  d.active_calls   = d.calls.length;
+  d.total_channels = d.calls.length;
+  return d;
+}
+
 let ws = null;
 let reconnectInterval = null;
 
@@ -197,6 +210,7 @@ function escapeHtml(str) {
 }
 
 function updateDisplay(data) {
+  data = filterByPermissions(data);
   console.log('Received data:', data);
 
   // Update debug display

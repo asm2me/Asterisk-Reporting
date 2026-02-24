@@ -27,22 +27,13 @@ if ($page === 'users') {
 if ($action === 'getdata') {
     header('Content-Type: application/json');
 
-    // Read realtime data from service
     $dataFile = __DIR__ . '/data/asterisk-realtime-data.json';
-
-    // Debug logging
-    error_log("Realtime: Checking file: $dataFile");
-    error_log("Realtime: File exists: " . (file_exists($dataFile) ? 'YES' : 'NO'));
 
     if (file_exists($dataFile)) {
         $fileAge = time() - filemtime($dataFile);
-        error_log("Realtime: File age: $fileAge seconds");
 
-        // Check if data is recent (updated within last 30 seconds - relaxed from 10)
         if ($fileAge > 30) {
-            // Service is not running or stale data
             http_response_code(503);
-            error_log("Realtime: File too old ($fileAge seconds)");
             echo json_encode([
                 'status' => 'error',
                 'error' => "Data is stale (age: {$fileAge}s)",
@@ -52,15 +43,18 @@ if ($action === 'getdata') {
                 'timestamp' => time()
             ]);
         } else {
-            // Fresh data
-            error_log("Realtime: Returning fresh data");
-            $data = file_get_contents($dataFile);
-            echo $data;
+            $raw  = file_get_contents($dataFile);
+            $data = json_decode($raw, true);
+
+            if (is_array($data) && !$isAdmin) {
+                $data = realtimeFilterByExtensions($data, (array)($me['extensions'] ?? []));
+                $raw  = json_encode($data);
+            }
+
+            echo $raw;
         }
     } else {
-        // File doesn't exist
         http_response_code(503);
-        error_log("Realtime: File not found");
         echo json_encode([
             'status' => 'error',
             'error' => 'Data file not found',
@@ -71,6 +65,40 @@ if ($action === 'getdata') {
         ]);
     }
     exit;
+}
+
+/**
+ * Filter realtime data arrays to only include entries matching allowed extensions.
+ * Recalculates active_calls / total_channels after filtering.
+ */
+function realtimeFilterByExtensions(array $data, array $allowedExts): array {
+    if (empty($allowedExts)) {
+        $data['calls']          = [];
+        $data['extension_kpis'] = [];
+        $data['active_calls']   = 0;
+        $data['total_channels'] = 0;
+        return $data;
+    }
+
+    $extSet = array_flip($allowedExts);
+
+    if (isset($data['calls']) && is_array($data['calls'])) {
+        $data['calls'] = array_values(array_filter(
+            $data['calls'],
+            static fn($c) => isset($extSet[(string)($c['extension'] ?? '')])
+        ));
+        $data['active_calls']   = count($data['calls']);
+        $data['total_channels'] = count($data['calls']);
+    }
+
+    if (isset($data['extension_kpis']) && is_array($data['extension_kpis'])) {
+        $data['extension_kpis'] = array_values(array_filter(
+            $data['extension_kpis'],
+            static fn($k) => isset($extSet[(string)($k['extension'] ?? '')])
+        ));
+    }
+
+    return $data;
 }
 
 /* Debug endpoint - show raw file */
