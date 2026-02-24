@@ -481,6 +481,9 @@ function fetchExtensionKPIs(array $CONFIG, PDO $pdo, array $me, array $filters):
     $cdrTable = $CONFIG['cdrTable'];
 
     // Get KPIs per extension (from src field)
+    // Only include rows where the originating channel is the extension itself
+    // (e.g. SIP/1001-XXXX or PJSIP/1001-XXXX). This excludes inbound calls
+    // from gateways whose src is the external caller number (e.g. 0501234567).
     $sql = "
     SELECT
         src as extension,
@@ -499,6 +502,11 @@ function fetchExtensionKPIs(array $CONFIG, PDO $pdo, array $me, array $filters):
     FROM `{$cdrTable}`
     WHERE {$whereSql}
       AND src REGEXP '^[0-9]+$'
+      AND (
+          channel LIKE CONCAT('SIP/',   src, '-%')
+          OR channel LIKE CONCAT('PJSIP/', src, '-%')
+          OR channel LIKE CONCAT('IAX2/',  src, '-%')
+      )
     GROUP BY src
     ORDER BY total_calls DESC
     ";
