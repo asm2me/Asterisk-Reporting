@@ -63,6 +63,7 @@ $availableGateways = $CONFIG['gateways'] ?? [];
 $q      = trim((string)getParam('q', ''));
 $src    = trim((string)getParam('src', ''));
 $dst    = trim((string)getParam('dst', ''));
+$ext    = trim((string)getParam('ext', ''));
 $disp   = strtoupper(trim((string)getParam('disposition', '')));
 $minDur = trim((string)getParam('mindur', ''));
 $preset = trim((string)getParam('preset', ''));
@@ -87,6 +88,7 @@ if ($to < $from) fail("Invalid date range: To must be same or later than From", 
 if ($disp !== '' && !preg_match('/^[A-Z_ ]+$/', $disp)) $disp = '';
 if ($src  !== '' && !preg_match('/^[0-9]+$/', $src)) $src = '';
 if ($dst  !== '' && !preg_match('/^[0-9]+$/', $dst)) $dst = '';
+if ($ext  !== '' && !preg_match('/^[0-9]+$/', $ext)) $ext = '';
 if ($minDur !== '' && (!ctype_digit($minDur) || (int)$minDur < 0)) $minDur = '';
 
 $allowedSort = ['calldate','src','dst','disposition','duration','billsec'];
@@ -98,6 +100,7 @@ $filters = [
     'q' => $q,
     'src' => $src,
     'dst' => $dst,
+    'ext' => $ext,
     'disposition' => $disp,
     'mindur' => $minDur,
     'preset' => $preset,
@@ -107,6 +110,8 @@ $filters = [
     'sort' => $sort,
     'dir' => $dir,
 ];
+
+$availableExtensions = fetchAvailableExtensions($CONFIG, $pdo, $me, $from, $to);
 
 $summary = fetchSummary($CONFIG, $pdo, $me, $filters);
 $total   = (int)($summary['total'] ?? 0);

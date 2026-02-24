@@ -48,6 +48,25 @@ function buildWhere(array $CONFIG, array $me, array $filters, array &$params): s
         $params[':dst_ch_psip'] = "PJSIP/{$dst}-%";
     }
 
+    // Extension filter: match calls where this extension is src OR dst OR either channel
+    $ext = trim((string)($filters['ext'] ?? ''));
+    if ($ext !== '' && preg_match('/^[0-9]+$/', $ext)) {
+        $where[] = "(
+            src = :ext_src
+            OR dst = :ext_dst
+            OR channel LIKE :ext_ch_sip
+            OR channel LIKE :ext_ch_psip
+            OR dstchannel LIKE :ext_dch_sip
+            OR dstchannel LIKE :ext_dch_psip
+        )";
+        $params[':ext_src']      = $ext;
+        $params[':ext_dst']      = $ext;
+        $params[':ext_ch_sip']   = "SIP/{$ext}-%";
+        $params[':ext_ch_psip']  = "PJSIP/{$ext}-%";
+        $params[':ext_dch_sip']  = "SIP/{$ext}-%";
+        $params[':ext_dch_psip'] = "PJSIP/{$ext}-%";
+    }
+
     $disp = (string)($filters['disposition'] ?? '');
     if ($disp !== '') {
         if ($disp === 'NO ANSWER') {
@@ -135,6 +154,50 @@ function buildWhere(array $CONFIG, array $me, array $filters, array &$params): s
     }
 
     return implode(' AND ', $where);
+}
+
+/**
+ * Returns all distinct numeric extensions (src values) seen in the CDR
+ * within the given date range, respecting ACL and excluding gateway channels.
+ */
+function fetchAvailableExtensions(array $CONFIG, PDO $pdo, array $me, string $from, string $to): array {
+    $cdrTable = $CONFIG['cdrTable'];
+    $params   = [':fromDt' => $from . ' 00:00:00', ':toDt' => $to . ' 23:59:59'];
+
+    $aclParams = [];
+    $acl = buildAcl($me, $aclParams);
+    $params = array_merge($params, $aclParams);
+
+    $gwExcludeConds = [];
+    foreach (($CONFIG['gateways'] ?? []) as $idx => $gw) {
+        $gwPat = rtrim(str_replace("\0", '', (string)$gw), '-%') . '-%';
+        $key = ':extlist_gw_' . (int)$idx;
+        $gwExcludeConds[] = "channel NOT LIKE {$key}";
+        $params[$key] = $gwPat;
+    }
+    $gwExcludeSql = $gwExcludeConds ? ('AND ' . implode(' AND ', $gwExcludeConds)) : '';
+
+    $sql = "
+    SELECT DISTINCT src
+    FROM `{$cdrTable}`
+    WHERE calldate >= :fromDt AND calldate <= :toDt
+      AND {$acl}
+      AND src REGEXP '^[0-9]{3,6}$'
+      {$gwExcludeSql}
+    ORDER BY src
+    LIMIT 500
+    ";
+
+    try {
+        $st = $pdo->prepare($sql);
+        foreach ($params as $k => $v) {
+            $st->bindValue($k, (string)$v, PDO::PARAM_STR);
+        }
+        $st->execute();
+        return array_column($st->fetchAll() ?: [], 'src');
+    } catch (Throwable $e) {
+        return [];
+    }
 }
 
 function fetchSummary(array $CONFIG, PDO $pdo, array $me, array $filters): array {
@@ -595,72 +658,56 @@ function xlsxCol(int $idx): string {
 }
 
 /**
- * Build and stream a minimal XLSX file.
- * $rows is an array of arrays; values may be int/float (→ numeric cell) or
- * string (→ inline-string cell).  Header row is rendered bold.
+ * Build a ZIP archive in memory without the ZipArchive extension.
+ * Requires only gzdeflate() from the zlib extension (always available).
+ * $files is an associative array: ['path/in/zip' => 'file contents', ...]
  */
-function streamXlsx(array $headers, array $rows, string $filename): void {
-    $tmp = tempnam(sys_get_temp_dir(), 'cdrxlsx');
-    $zip = new ZipArchive();
-    if ($zip->open($tmp, ZipArchive::OVERWRITE) !== true) {
-        http_response_code(500); echo 'Cannot create export file'; exit;
+function xlsxBuildZip(array $files): string {
+    $central = '';
+    $output  = '';
+    $offset  = 0;
+
+    foreach ($files as $name => $data) {
+        $crc   = crc32($data);
+        $uSize = strlen($data);
+        $comp  = gzdeflate($data, 6);
+        if ($comp === false || strlen($comp) >= $uSize) {
+            $comp   = $data;
+            $method = 0; // STORE
+        } else {
+            $method = 8; // DEFLATE
+        }
+        $cSize   = strlen($comp);
+        $nameLen = strlen($name);
+
+        $local = pack('VvvvvvVVVvv',
+            0x04034b50, 20, 0, $method, 0, 0, $crc, $cSize, $uSize, $nameLen, 0
+        ) . $name . $comp;
+
+        $output  .= $local;
+        $central .= pack('VvvvvvvVVVvvvvvVV',
+            0x02014b50, 0x0314, 20, 0, $method, 0, 0,
+            $crc, $cSize, $uSize, $nameLen, 0, 0, 0, 0, 0, $offset
+        ) . $name;
+
+        $offset += strlen($local);
     }
 
-    $zip->addFromString('[Content_Types].xml',
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
-        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'.
-        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'.
-        '<Default Extension="xml"  ContentType="application/xml"/>'.
-        '<Override PartName="/xl/workbook.xml"           ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'.
-        '<Override PartName="/xl/worksheets/sheet1.xml"  ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'.
-        '<Override PartName="/xl/styles.xml"             ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'.
-        '</Types>');
+    $cdSize   = strlen($central);
+    $numFiles = count($files);
+    $end = pack('VvvvvVVv', 0x06054b50, 0, 0, $numFiles, $numFiles, $cdSize, $offset, 0);
 
-    $zip->addFromString('_rels/.rels',
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
-        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'.
-        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'.
-        '</Relationships>');
+    return $output . $central . $end;
+}
 
-    $zip->addFromString('xl/workbook.xml',
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
-        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'.
-        '          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'.
-        '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>'.
-        '</workbook>');
-
-    $zip->addFromString('xl/_rels/workbook.xml.rels',
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
-        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'.
-        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'.
-        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"   Target="styles.xml"/>'.
-        '</Relationships>');
-
-    // Minimal styles: index 0 = normal, index 1 = bold header
-    $zip->addFromString('xl/styles.xml',
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
-        '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'.
-        '<fonts count="2">'.
-          '<font><sz val="11"/><name val="Calibri"/></font>'.
-          '<font><b/><sz val="11"/><name val="Calibri"/></font>'.
-        '</fonts>'.
-        '<fills count="2">'.
-          '<fill><patternFill patternType="none"/></fill>'.
-          '<fill><patternFill patternType="gray125"/></fill>'.
-        '</fills>'.
-        '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'.
-        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'.
-        '<cellXfs count="2">'.
-          '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'.
-          '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'.
-        '</cellXfs>'.
-        '</styleSheet>');
-
-    // Build worksheet using inline strings (no shared-strings pre-pass needed)
+/**
+ * Build and stream a minimal XLSX file (no ZipArchive extension required).
+ * $rows is an array of arrays; int/float values → numeric cells, strings → inline-string cells.
+ * Header row is rendered bold.
+ */
+function streamXlsx(array $headers, array $rows, string $filename): void {
     $ws  = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
     $ws .= '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>';
-
-    // Header row (bold, style index 1)
     $ws .= '<row r="1">';
     foreach ($headers as $ci => $h) {
         $col = xlsxCol($ci);
@@ -668,16 +715,13 @@ function streamXlsx(array $headers, array $rows, string $filename): void {
         $ws .= "<c r=\"{$col}1\" t=\"inlineStr\" s=\"1\"><is><t>{$esc}</t></is></c>";
     }
     $ws .= '</row>';
-
-    // Data rows
     $rowNum = 2;
     foreach ($rows as $row) {
         $ws .= "<row r=\"{$rowNum}\">";
         foreach (array_values($row) as $ci => $val) {
             $col = xlsxCol($ci);
-            // Store integers/floats as numeric cells; everything else as string
             if (is_int($val) || is_float($val)) {
-                $ws .= "<c r=\"{$col}{$rowNum}\"><v>" . $val . "</v></c>";
+                $ws .= "<c r=\"{$col}{$rowNum}\"><v>{$val}</v></c>";
             } else {
                 $esc = htmlspecialchars((string)($val ?? ''), ENT_XML1, 'UTF-8');
                 $ws .= "<c r=\"{$col}{$rowNum}\" t=\"inlineStr\"><is><t>{$esc}</t></is></c>";
@@ -688,14 +732,58 @@ function streamXlsx(array $headers, array $rows, string $filename): void {
     }
     $ws .= '</sheetData></worksheet>';
 
-    $zip->addFromString('xl/worksheets/sheet1.xml', $ws);
-    $zip->close();
+    $zip = xlsxBuildZip([
+        '[Content_Types].xml' =>
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'.
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'.
+            '<Default Extension="xml"  ContentType="application/xml"/>'.
+            '<Override PartName="/xl/workbook.xml"          ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'.
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'.
+            '<Override PartName="/xl/styles.xml"            ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'.
+            '</Types>',
+        '_rels/.rels' =>
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'.
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'.
+            '</Relationships>',
+        'xl/workbook.xml' =>
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'.
+            ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'.
+            '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>'.
+            '</workbook>',
+        'xl/_rels/workbook.xml.rels' =>
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'.
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'.
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"   Target="styles.xml"/>'.
+            '</Relationships>',
+        'xl/styles.xml' =>
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
+            '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'.
+            '<fonts count="2">'.
+              '<font><sz val="11"/><name val="Calibri"/></font>'.
+              '<font><b/><sz val="11"/><name val="Calibri"/></font>'.
+            '</fonts>'.
+            '<fills count="2">'.
+              '<fill><patternFill patternType="none"/></fill>'.
+              '<fill><patternFill patternType="gray125"/></fill>'.
+            '</fills>'.
+            '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'.
+            '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'.
+            '<cellXfs count="2">'.
+              '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'.
+              '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'.
+            '</cellXfs>'.
+            '</styleSheet>',
+        'xl/worksheets/sheet1.xml' => $ws,
+    ]);
 
     header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     header('Content-Disposition: attachment; filename="' . rawurlencode($filename) . '"');
-    header('Content-Length: ' . filesize($tmp));
-    readfile($tmp);
-    @unlink($tmp);
+    header('Content-Length: ' . strlen($zip));
+    echo $zip;
     exit;
 }
 

@@ -37,6 +37,7 @@ $src  = (string)$filters['src'];
 $dst  = (string)$filters['dst'];
 $disp = (string)$filters['disposition'];
 $minDur = (string)$filters['mindur'];
+$ext    = (string)($filters['ext'] ?? '');
 $preset = (string)($filters['preset'] ?? '');
 $gateway = (string)($filters['gateway'] ?? '');
 ?>
@@ -217,6 +218,16 @@ $gateway = (string)($filters['gateway'] ?? '');
 
         <div><label>Src (number OR channel)</label><input name="src" value="<?= h($src) ?>" placeholder="1001"></div>
         <div><label>Dst (number OR dstchannel)</label><input name="dst" value="<?= h($dst) ?>" placeholder="2000"></div>
+
+        <div>
+          <label>Extension</label>
+          <select name="ext">
+            <option value="">All Extensions</option>
+            <?php foreach ($availableExtensions as $e): ?>
+              <option value="<?= h($e) ?>" <?= ($ext === $e) ? 'selected' : '' ?>><?= h($e) ?></option>
+            <?php endforeach; ?>
+          </select>
+        </div>
 
         <div>
           <label>Disposition</label>
