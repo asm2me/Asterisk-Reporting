@@ -158,6 +158,16 @@ use function fmtTime;
         <div><label>Dst (number OR dstchannel)</label><input name="dst" value="<?= h($dst ?? '') ?>" placeholder="2000"></div>
 
         <div>
+          <label>Extension</label>
+          <select name="ext">
+            <option value="">All Extensions</option>
+            <?php foreach ($availableExtensions as $e): ?>
+              <option value="<?= h($e) ?>" <?= (($ext ?? '') === $e) ? 'selected' : '' ?>><?= h($e) ?></option>
+            <?php endforeach; ?>
+          </select>
+        </div>
+
+        <div>
           <label>Disposition</label>
           <select name="disposition">
             <option value="">Any</option>

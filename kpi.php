@@ -34,6 +34,7 @@ $availableGateways = $CONFIG['gateways'] ?? [];
 $q      = trim((string)getParam('q', ''));
 $src    = trim((string)getParam('src', ''));
 $dst    = trim((string)getParam('dst', ''));
+$ext    = trim((string)getParam('ext', ''));
 $disp   = strtoupper(trim((string)getParam('disposition', '')));
 $minDur = trim((string)getParam('mindur', ''));
 $preset = trim((string)getParam('preset', ''));
@@ -42,17 +43,22 @@ $gateway = trim((string)getParam('gateway', ''));
 if (!isValidDate($from) || !isValidDate($to)) fail("Invalid date (use YYYY-MM-DD)", 400);
 if ($to < $from) fail("Invalid date range: To must be same or later than From", 400);
 
+if ($ext !== '' && !preg_match('/^[0-9]+$/', $ext)) $ext = '';
+
 $filters = [
     'from' => $from,
     'to' => $to,
     'q' => $q,
     'src' => $src,
     'dst' => $dst,
+    'ext' => $ext,
     'disposition' => $disp,
     'mindur' => $minDur,
     'preset' => $preset,
     'gateway' => $gateway,
 ];
+
+$availableExtensions = fetchAvailableExtensions($CONFIG, $pdo, $me, $from, $to);
 
 /* Fetch Extension KPIs */
 $kpiData = fetchExtensionKPIs($CONFIG, $pdo, $me, $filters);
