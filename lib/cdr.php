@@ -293,12 +293,18 @@ function fetchPageRows(array $CONFIG, PDO $pdo, array $me, array $filters): arra
            t1.duration, t1.billsec, t1.uniqueid, t1.recordingfile,
            grp.grp_id AS linkedid,
            grp.leg_count,
+           grp.any_bridged,
+           grp.any_queue,
            t1.disposition AS last_leg_status,
            grp.last_bridged_dst
     FROM (
         SELECT
             COALESCE(linkedid, uniqueid) AS grp_id,
             COUNT(*) AS leg_count,
+            MAX(CASE WHEN dstchannel IS NOT NULL AND dstchannel != '' AND dst != 's'
+                     THEN 1 ELSE 0 END) AS any_bridged,
+            MAX(CASE WHEN dcontext LIKE '%ext-queues%'
+                     THEN 1 ELSE 0 END) AS any_queue,
             SUBSTRING_INDEX(MAX(CONCAT(
                 DATE_FORMAT(calldate, '%Y-%m-%d %H:%i:%s'), '|', uniqueid
             )), '|', -1) AS main_uniqueid,

@@ -313,24 +313,24 @@ $gateway = (string)($filters['gateway'] ?? '');
         $shown = 0;
         foreach ($rows as $r):
           $shown++;
-          $legCount = (int)($r['leg_count'] ?? 1);
-          // Use last leg's disposition
+          $legCount   = (int)($r['leg_count'] ?? 1);
+          $anyBridged = (bool)(int)($r['any_bridged'] ?? 0);
+          $anyQueue   = (bool)(int)($r['any_queue']   ?? 0);
+          // Raw disposition from the representative leg (fallback only)
           $d = strtoupper((string)($r['last_leg_status'] ?? $r['disposition'] ?? ''));
-          $dcontext = (string)($r['dcontext'] ?? '');
-          $dstchannel = (string)($r['dstchannel'] ?? '');
-          $dst = (string)($r['dst'] ?? '');
 
-          // Check if call was not bridged
-          $notBridged = ($dstchannel === '' || $dst === 's');
-
-          // Consider calls that entered ext-queues and were not bridged as ABANDONED
-          if ($notBridged && stripos($dcontext, 'ext-queues') !== false) {
-            $d = 'ABANDONED';
+          // Determine effective disposition from group-level flags so that a
+          // call answered on LEG1 is never shown as missed/abandoned just
+          // because the representative (last) CDR row has no dstchannel.
+          if ($anyBridged) {
+            $d   = 'ANSWERED';
+            $cls = 'ok';
+          } elseif (!$anyBridged && $anyQueue) {
+            $d   = 'ABANDONED';
             $cls = 'warn';
-          }
-          // Consider calls with 1 leg as MISSED
-          elseif ($legCount === 1) {
-            $d = 'MISSED';
+          } elseif ($legCount === 1 && $d !== 'ANSWERED') {
+            // Single-leg, not bridged, not answered by CDR → missed
+            $d   = 'MISSED';
             $cls = 'bad';
           } else {
             $cls = 'warn';

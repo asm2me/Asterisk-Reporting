@@ -1,8 +1,6 @@
 <?php
 use function h;
 /** @var string $LOGIN_ERROR */
-$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
-    || (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
 ?>
 <!doctype html>
 <html>
@@ -21,19 +19,10 @@ $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
     button{margin-top:12px;background:rgba(68,209,157,.14);border:1px solid rgba(68,209,157,.25);
            color:#e8eefc;padding:10px 12px;border-radius:12px;cursor:pointer;width:100%;font-size:13px}
     .err{margin-top:10px;color:#ff6b7a;font-size:13px}
-    .warn-http{margin-bottom:14px;background:rgba(255,204,102,.12);border:1px solid rgba(255,204,102,.35);
-               border-radius:10px;padding:10px 12px;font-size:12px;color:#ffcc66;line-height:1.5}
-    .warn-http strong{display:block;margin-bottom:2px;font-size:13px}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <?php if (!$isHttps): ?>
-    <div class="warn-http">
-      <strong>&#9888; Insecure connection (HTTP)</strong>
-      Your login credentials will be transmitted without encryption. Consider enabling HTTPS on your server.
-    </div>
-    <?php endif; ?>
     <div class="card">
       <h1>Supervisor CDR</h1>
       <div class="muted">Please sign in.</div>
