@@ -264,26 +264,32 @@ function fetchPageRows(array $CONFIG, PDO $pdo, array $me, array $filters): arra
     $per    = (int)($filters['per'] ?? 50);
     $offset = ($pageNo - 1) * $per;
 
+    // Single-pass derived table replaces 3 correlated subqueries.
+    // Groups by linkedid, computes leg_count and last_bridged_dst in one scan,
+    // then joins back to get the full representative row.
+    // Recommended indexes: calldate, linkedid, uniqueid
     $sql = "
     SELECT t1.calldate, t1.clid, t1.src, t1.dst, t1.channel, t1.dstchannel, t1.dcontext, t1.disposition,
            t1.duration, t1.billsec, t1.uniqueid, t1.recordingfile,
-           COALESCE(t1.linkedid, t1.uniqueid) as linkedid,
-           (SELECT COUNT(*) FROM `{$cdrTable}` t2
-            WHERE COALESCE(t2.linkedid, t2.uniqueid) = COALESCE(t1.linkedid, t1.uniqueid)) as leg_count,
-           t1.disposition as last_leg_status,
-           (SELECT t4.dst FROM `{$cdrTable}` t4
-            WHERE COALESCE(t4.linkedid, t4.uniqueid) = COALESCE(t1.linkedid, t1.uniqueid)
-              AND (t4.dstchannel IS NOT NULL AND t4.dstchannel != '')
-            ORDER BY t4.calldate DESC, t4.uniqueid DESC
-            LIMIT 1) as last_bridged_dst
-    FROM `{$cdrTable}` t1
-    WHERE {$whereSql}
-      AND t1.uniqueid = (
-        SELECT t3.uniqueid FROM `{$cdrTable}` t3
-        WHERE COALESCE(t3.linkedid, t3.uniqueid) = COALESCE(t1.linkedid, t1.uniqueid)
-        ORDER BY t3.calldate DESC, t3.uniqueid DESC
-        LIMIT 1
-      )
+           grp.grp_id AS linkedid,
+           grp.leg_count,
+           t1.disposition AS last_leg_status,
+           grp.last_bridged_dst
+    FROM (
+        SELECT
+            COALESCE(linkedid, uniqueid) AS grp_id,
+            COUNT(*) AS leg_count,
+            SUBSTRING_INDEX(MAX(CONCAT(
+                DATE_FORMAT(calldate, '%Y-%m-%d %H:%i:%s'), '|', uniqueid
+            )), '|', -1) AS main_uniqueid,
+            SUBSTRING_INDEX(IFNULL(MAX(CASE WHEN dstchannel IS NOT NULL AND dstchannel != ''
+                THEN CONCAT(DATE_FORMAT(calldate, '%Y-%m-%d %H:%i:%s'), '|', uniqueid, '|', dst)
+                ELSE NULL END), ''), '|', -1) AS last_bridged_dst
+        FROM `{$cdrTable}`
+        WHERE {$whereSql}
+        GROUP BY COALESCE(linkedid, uniqueid)
+    ) grp
+    INNER JOIN `{$cdrTable}` t1 ON t1.uniqueid = grp.main_uniqueid
     ORDER BY {$sort} {$dir}
     LIMIT :lim OFFSET :off
     ";
@@ -319,6 +325,39 @@ function fetchCallLegs(array $CONFIG, PDO $pdo, string $linkedid): array {
         $st = $pdo->prepare($sql);
         $st->execute([':linkedid' => $linkedid]);
         return $st->fetchAll() ?: [];
+    } catch (Throwable $e) {
+        return [];
+    }
+}
+
+/**
+ * Batch-fetch call legs for all linkedids on a page in a single query.
+ * Returns an array keyed by linkedid, each value an array of leg rows.
+ * Replaces N individual fetchCallLegs() calls with one round-trip.
+ */
+function fetchCallLegsForRows(array $CONFIG, PDO $pdo, array $linkedIds): array {
+    $linkedIds = array_values(array_filter(array_unique($linkedIds), fn($v) => $v !== ''));
+    if (empty($linkedIds)) return [];
+
+    $cdrTable = $CONFIG['cdrTable'];
+    $placeholders = implode(',', array_fill(0, count($linkedIds), '?'));
+
+    $sql = "
+    SELECT calldate, clid, src, dst, channel, dstchannel, dcontext, disposition, duration, billsec, uniqueid, recordingfile,
+           COALESCE(linkedid, uniqueid) AS linkedid
+    FROM `{$cdrTable}`
+    WHERE COALESCE(linkedid, uniqueid) IN ({$placeholders})
+    ORDER BY COALESCE(linkedid, uniqueid), calldate ASC, uniqueid ASC
+    ";
+
+    try {
+        $st = $pdo->prepare($sql);
+        $st->execute($linkedIds);
+        $grouped = [];
+        foreach ($st->fetchAll() ?: [] as $row) {
+            $grouped[$row['linkedid']][] = $row;
+        }
+        return $grouped;
     } catch (Throwable $e) {
         return [];
     }

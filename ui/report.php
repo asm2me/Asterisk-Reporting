@@ -179,7 +179,7 @@ $gateway = (string)($filters['gateway'] ?? '');
     <div class="card"><div class="k">Abandoned (Queue)</div><div class="v" style="color:var(--warn)"><?= (int)$abandoned ?></div></div>
     <div class="card"><div class="k">Busy</div><div class="v" style="color:var(--bad)"><?= (int)$busy ?></div></div>
     <div class="card"><div class="k">Failed</div><div class="v" style="color:var(--bad)"><?= (int)$failed ?></div></div>
-    <div class="card"><div class="k">Max Trunk Concurrent</div><div class="v" style="color:var(--accent)"><?= (int)$maxConcurrent ?></div></div>
+    <div class="card"><div class="k">Max Trunk Concurrent</div><div class="v" style="color:var(--accent)" id="maxConcurrentVal">…</div></div>
   </div>
 
   <div class="card" style="margin-bottom:12px;">
@@ -377,7 +377,7 @@ $gateway = (string)($filters['gateway'] ?? '');
               <div class="detail-panel">
                 <?php
                 $linkedId = (string)($r['linkedid'] ?? $r['uniqueid'] ?? '');
-                $callLegs = fetchCallLegs($CONFIG, $pdo, $linkedId);
+                $callLegs = $callLegsByLinkedId[$linkedId] ?? [];
                 $legCount = count($callLegs);
                 ?>
                 <h4 style="margin:0 0 10px 0;color:var(--accent);">
@@ -581,6 +581,23 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 });
+
+// Load max concurrent calls asynchronously so it doesn't block page render
+(function() {
+  const el = document.getElementById('maxConcurrentVal');
+  if (!el) return;
+  const params = new URLSearchParams({
+    action:  'concurrent',
+    from:    <?= json_encode($from) ?>,
+    to:      <?= json_encode($to) ?>,
+    preset:  <?= json_encode($preset) ?>,
+    gateway: <?= json_encode($gateway) ?>,
+  });
+  fetch('?' + params.toString())
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(d => { el.textContent = d.maxConcurrent ?? '—'; })
+    .catch(() => { el.textContent = '—'; });
+})();
 
 function toggleDetails(rowId) {
   const detailRow = document.getElementById(rowId);

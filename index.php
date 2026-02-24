@@ -30,6 +30,28 @@ if ($action === 'play' || $action === 'download') {
     exit;
 }
 
+/* Async: max concurrent calls (loaded by JS after page render) */
+if ($action === 'concurrent') {
+    header('Content-Type: application/json');
+    $asyncFilters = [
+        'from'         => (string)getParam('from', date('Y-m-d')),
+        'to'           => (string)getParam('to', date('Y-m-d')),
+        'q'            => '',
+        'src'          => '',
+        'dst'          => '',
+        'disposition'  => '',
+        'mindur'       => '',
+        'preset'       => trim((string)getParam('preset', '')),
+        'gateway'      => trim((string)getParam('gateway', '')),
+        'page'         => 1,
+        'per'          => 50,
+        'sort'         => 'calldate',
+        'dir'          => 'desc',
+    ];
+    echo json_encode(['maxConcurrent' => fetchMaxConcurrentCalls($CONFIG, $pdo, $me, $asyncFilters)]);
+    exit;
+}
+
 /* Inputs */
 $from   = (string)getParam('from', date('Y-m-d'));
 $to     = (string)getParam('to', date('Y-m-d'));
@@ -88,7 +110,6 @@ $filters = [
 
 $summary = fetchSummary($CONFIG, $pdo, $me, $filters);
 $total   = (int)($summary['total'] ?? 0);
-$maxConcurrent = fetchMaxConcurrentCalls($CONFIG, $pdo, $me, $filters);
 
 $pages = max(1, (int)ceil($total / $per));
 if ($pageNo > $pages) $pageNo = $pages;
@@ -100,6 +121,10 @@ if ($format === 'csv') {
 }
 
 $rows = fetchPageRows($CONFIG, $pdo, $me, $filters);
+
+// Pre-fetch all call legs for this page in one query (fixes N+1 problem)
+$linkedIds = array_unique(array_column($rows, 'linkedid'));
+$callLegsByLinkedId = fetchCallLegsForRows($CONFIG, $pdo, $linkedIds);
 
 require __DIR__ . '/ui/report.php';
 
