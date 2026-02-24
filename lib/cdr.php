@@ -480,10 +480,20 @@ function fetchExtensionKPIs(array $CONFIG, PDO $pdo, array $me, array $filters):
     $whereSql = buildWhere($CONFIG, $me, $filters, $params);
     $cdrTable = $CONFIG['cdrTable'];
 
-    // Get KPIs per extension (from src field)
-    // Only include rows where the originating channel is the extension itself
-    // (e.g. SIP/1001-XXXX or PJSIP/1001-XXXX). This excludes inbound calls
-    // from gateways whose src is the external caller number (e.g. 0501234567).
+    // Exclude inbound calls from gateway trunks: those rows have the external
+    // caller's number as src (e.g. 0501234567), which is not an extension.
+    // We exclude them by checking that channel does NOT match any configured
+    // gateway prefix. Outbound and internal calls are unaffected regardless of
+    // whether they use PJSIP, SIP, Local, or other channel types.
+    $gwExcludeConds = [];
+    foreach (($CONFIG['gateways'] ?? []) as $idx => $gw) {
+        $gwPat = rtrim(str_replace("\0", '', (string)$gw), '-%') . '-%';
+        $key = ':kpi_gw_' . (int)$idx;
+        $gwExcludeConds[] = "channel NOT LIKE {$key}";
+        $params[$key] = $gwPat;
+    }
+    $gwExcludeSql = $gwExcludeConds ? ('AND ' . implode(' AND ', $gwExcludeConds)) : '';
+
     $sql = "
     SELECT
         src as extension,
@@ -502,11 +512,7 @@ function fetchExtensionKPIs(array $CONFIG, PDO $pdo, array $me, array $filters):
     FROM `{$cdrTable}`
     WHERE {$whereSql}
       AND src REGEXP '^[0-9]+$'
-      AND (
-          channel LIKE CONCAT('SIP/',   src, '-%')
-          OR channel LIKE CONCAT('PJSIP/', src, '-%')
-          OR channel LIKE CONCAT('IAX2/',  src, '-%')
-      )
+      {$gwExcludeSql}
     GROUP BY src
     ORDER BY total_calls DESC
     ";
