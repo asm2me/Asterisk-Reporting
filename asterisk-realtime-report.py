@@ -138,7 +138,7 @@ def load_extension_stats_from_db():
             SELECT
                 SUBSTRING_INDEX(SUBSTRING_INDEX(channel, '/', -1), '-', 1) AS extension,
                 COUNT(*) as total_calls,
-                SUM(CASE WHEN dstchannel IS NOT NULL AND dstchannel != '' THEN 1 ELSE 0 END) as answered_calls,
+                SUM(CASE WHEN disposition = 'ANSWERED' THEN 1 ELSE 0 END) as answered_calls,
                 SUM(billsec) as total_duration,
                 SUM(CASE WHEN disposition IN ('NO ANSWER', 'NOANSWER') THEN 1 ELSE 0 END) as missed_calls,
                 -- Direction detection: check if dstchannel is gateway
@@ -154,11 +154,11 @@ def load_extension_stats_from_db():
 
             UNION ALL
 
-            -- Extensions from destination channel
+            -- Extensions from destination channel (inbound: only answered if bridged to local extension)
             SELECT
                 SUBSTRING_INDEX(SUBSTRING_INDEX(dstchannel, '/', -1), '-', 1) AS extension,
                 COUNT(*) as total_calls,
-                SUM(CASE WHEN dstchannel IS NOT NULL AND dstchannel != '' THEN 1 ELSE 0 END) as answered_calls,
+                SUM(CASE WHEN disposition = 'ANSWERED' AND dstchannel REGEXP '^(PJSIP|SIP)/[0-9]+' THEN 1 ELSE 0 END) as answered_calls,
                 SUM(billsec) as total_duration,
                 SUM(CASE WHEN disposition IN ('NO ANSWER', 'NOANSWER') THEN 1 ELSE 0 END) as missed_calls,
                 0 as outbound_calls,
