@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 function doLogout(): void {
     startSecureSession();
+    // Record logout before destroying the session (needs session_log_id)
+    recordLogout();
     $_SESSION = [];
     if (ini_get("session.use_cookies")) {
         $params = session_get_cookie_params();
@@ -53,6 +55,7 @@ function requireSessionLogin(array $usersData): array {
             } else {
                 session_regenerate_id(true);
                 $_SESSION['auth_user'] = $u;
+                recordLogin($u);  // Log login time
                 header('Location: ' . strtok($_SERVER['REQUEST_URI'], '?') . (empty($_GET) ? '' : ('?' . http_build_query($_GET))));
                 exit;
             }
@@ -148,6 +151,15 @@ function handleUsersPage(array $CONFIG, array $usersData, array $me): void {
 
     $edit = null;
     if ($editUser !== '' && isset($usersData['users'][$editUser])) $edit = $usersData['users'][$editUser];
+
+    // Load session log for display
+    $sessionLog  = loadSessionLog();
+    $todayStart  = date('Y-m-d') . ' 00:00:00';
+    $SESSION_SUMMARY_TODAY = getSessionSummary($sessionLog['sessions'], $todayStart);
+    $SESSION_RECENT = array_slice(
+        array_reverse($sessionLog['sessions']),
+        0, 100
+    );
 
     header('Content-Type: text/html; charset=utf-8');
     $USERS_DATA = $usersData;

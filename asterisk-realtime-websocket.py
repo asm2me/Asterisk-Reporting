@@ -293,6 +293,50 @@ class AsteriskAMI:
             print(f"✗ Error getting queue paused members: {e}")
             return set()
 
+    async def get_presence_states(self):
+        """Get FOP2/CustomPresence states from AstDB.
+
+        FOP2 stores agent presence under AstDB family 'CustomPresence'.
+        Value format: state[:subtype[:note]]
+        e.g.  available  |  away:break:  |  xa::At lunch
+        """
+        try:
+            command = "Action: Command\r\nCommand: database show CustomPresence\r\n\r\n"
+            self.writer.write(command.encode())
+            await self.writer.drain()
+
+            buffer = b""
+            timeout = time.time() + 3
+            while time.time() < timeout:
+                try:
+                    chunk = await asyncio.wait_for(self.reader.read(4096), timeout=1.0)
+                    if not chunk:
+                        break
+                    buffer += chunk
+                    if b'--END COMMAND--' in buffer:
+                        break
+                except asyncio.TimeoutError:
+                    break
+
+            presence = {}
+            text = buffer.decode('utf-8', errors='ignore')
+            for line in text.split('\n'):
+                # Line format: "/1001                 : away:break:On break"
+                m = re.search(r'/(\d+)\s*:\s*(.+)', line)
+                if m:
+                    ext = m.group(1)
+                    raw = m.group(2).strip()
+                    parts = raw.split(':')
+                    presence[ext] = {
+                        'state':   parts[0].strip() if parts else 'available',
+                        'subtype': parts[1].strip() if len(parts) > 1 else '',
+                        'note':    parts[2].strip() if len(parts) > 2 else '',
+                    }
+            return presence
+        except Exception as e:
+            print(f"✗ Error getting presence states: {e}")
+            return {}
+
     async def get_queue_status(self):
         """Get detailed queue status including waiting calls and members"""
         try:
@@ -569,7 +613,7 @@ def load_db_stats():
         print(f"⚠ Database stats load failed: {e}")
 
 
-def process_channels(channels, extension_states=None, paused_extensions=None):
+def process_channels(channels, extension_states=None, paused_extensions=None, presence_states=None):
     """Process channel data into structured format"""
     if extension_states is None:
         extension_states = {}
@@ -728,6 +772,27 @@ def process_channels(channels, extension_states=None, paused_extensions=None):
             # No active calls and not in extension_states, assume offline
             detailed_status = 'offline'
 
+        # FOP2 / CustomPresence state
+        presence = (presence_states or {}).get(ext, {})
+        pstate   = presence.get('state', 'available')   # available, away, xa, dnd, chat
+        psubtype = presence.get('subtype', '')           # break, lunch, training, meeting …
+        pnote    = presence.get('note', '')
+
+        # Combined availability for the breaks/availability report
+        sip_online = (detailed_status != 'offline')
+        if not sip_online:
+            availability = 'offline'
+        elif detailed_status in ('in-call', 'busy', 'on-hold'):
+            availability = 'on_call'
+        elif detailed_status == 'ringing':
+            availability = 'ringing'
+        elif pstate == 'dnd':
+            availability = 'dnd'
+        elif pstate in ('away', 'xa'):
+            availability = 'break'
+        else:
+            availability = 'available'
+
         kpi_list.append({
             'extension': stats['extension'],
             'caller_id': stats['caller_id'],
@@ -744,6 +809,12 @@ def process_channels(channels, extension_states=None, paused_extensions=None):
             'aht': avg_dur,  # Average Handle Time (same as avg_duration)
             'first_call_start': db.get('first_call_start', ''),
             'last_call_end': db.get('last_call_end', ''),
+            # Presence / availability fields
+            'presence_state':   pstate,
+            'presence_subtype': psubtype,
+            'presence_note':    pnote,
+            'sip_status':       extension_states.get(ext, 'offline'),
+            'availability':     availability,
         })
 
     return {
@@ -816,6 +887,7 @@ async def ami_monitor_loop():
             extension_states = await ami.get_extension_states()
             queue_status = await ami.get_queue_status()
             paused_extensions = await ami.get_queue_paused_members()
+            presence_states = await ami.get_presence_states()
 
             current_count = len(channels)
 
@@ -828,7 +900,7 @@ async def ami_monitor_loop():
             last_channel_count = current_count
 
             # Process and broadcast
-            data = process_channels(channels, extension_states, paused_extensions)
+            data = process_channels(channels, extension_states, paused_extensions, presence_states)
 
             # Add queue data
             data['queues'] = process_queue_data(queue_status)

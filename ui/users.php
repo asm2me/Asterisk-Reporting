@@ -6,6 +6,8 @@ use function h;
 /** @var string $MSG */
 /** @var string $EDIT_USER */
 /** @var array|null $EDIT_REC */
+/** @var array $SESSION_SUMMARY_TODAY */
+/** @var array $SESSION_RECENT */
 ?>
 <!doctype html>
 <html>
@@ -22,6 +24,10 @@ use function h;
     th,td{padding:12px;text-align:left;border-bottom:1px solid rgba(255,255,255,.08)}
     th{background:rgba(255,255,255,.05);font-weight:600}
     tr:last-child td{border-bottom:none}
+    .pill{display:inline-flex;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;}
+    .pill-ok{background:rgba(68,209,157,.15);color:#44d19d;border:1px solid rgba(68,209,157,.3);}
+    .pill-muted{background:rgba(80,80,90,.15);color:#888;border:1px solid rgba(80,80,90,.3);}
+    .section-hdr{margin:32px 0 12px;font-size:18px;border-bottom:1px solid rgba(255,255,255,.08);padding-bottom:8px;}
     a{color:#44d19d;text-decoration:none}
     a:hover{text-decoration:underline}
     .btn{display:inline-block;padding:8px 16px;background:rgba(68,209,157,.14);border:1px solid rgba(68,209,157,.25);color:#e8eefc;border-radius:8px;cursor:pointer;text-decoration:none;font-size:13px}
@@ -166,5 +172,89 @@ use function h;
       </tbody>
     </table>
   <?php endif; ?>
+
+<?php if (empty($EDIT_USER)): ?>
+  <!-- ═══ Session Summary (Today) ════════════════════════════════════════════ -->
+  <h2 class="section-hdr">📊 Session Summary — Today</h2>
+  <?php if (empty($SESSION_SUMMARY_TODAY)): ?>
+    <p style="color:#9fb0d0;font-size:13px;">No logins recorded today.</p>
+  <?php else: ?>
+    <table>
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Sessions Today</th>
+          <th>Total Time Today</th>
+          <th>First Login</th>
+          <th>Last Logout</th>
+        </tr>
+      </thead>
+      <tbody>
+        <?php foreach ($SESSION_SUMMARY_TODAY as $row): ?>
+          <?php
+            $tot = (int)$row['total_duration'];
+            $h = intdiv($tot, 3600);
+            $m = intdiv($tot % 3600, 60);
+            $s = $tot % 60;
+            $durStr = ($h > 0 ? "{$h}h " : '') . "{$m}m {$s}s";
+          ?>
+          <tr>
+            <td><strong><?= h($row['username']) ?></strong></td>
+            <td><?= h((string)$row['sessions_count']) ?></td>
+            <td><?= h($durStr) ?></td>
+            <td><?= h($row['first_login'] ?? '-') ?></td>
+            <td><?= h($row['last_logout'] ?: '(active)') ?></td>
+          </tr>
+        <?php endforeach; ?>
+      </tbody>
+    </table>
+  <?php endif; ?>
+
+  <!-- ═══ Recent Session History ══════════════════════════════════════════════ -->
+  <h2 class="section-hdr">🕒 Recent Session History <small style="font-size:13px;color:#9fb0d0;">(last 100 sessions)</small></h2>
+  <?php if (empty($SESSION_RECENT)): ?>
+    <p style="color:#9fb0d0;font-size:13px;">No sessions recorded yet.</p>
+  <?php else: ?>
+    <table>
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Login</th>
+          <th>Logout</th>
+          <th>Duration</th>
+          <th>IP</th>
+        </tr>
+      </thead>
+      <tbody>
+        <?php foreach ($SESSION_RECENT as $s): ?>
+          <?php
+            $dur = $s['duration'] !== null ? (int)$s['duration'] : null;
+            if ($dur !== null) {
+                $sh = intdiv($dur, 3600);
+                $sm = intdiv($dur % 3600, 60);
+                $ss = $dur % 60;
+                $durStr = ($sh > 0 ? "{$sh}h " : '') . "{$sm}m {$ss}s";
+            } else {
+                $durStr = null;
+            }
+            $isActive = ($s['logout_at'] === null);
+          ?>
+          <tr>
+            <td><strong><?= h($s['username'] ?? '-') ?></strong></td>
+            <td><?= h($s['login_at'] ?? '-') ?></td>
+            <td><?= $isActive
+                    ? '<span class="pill pill-ok">Active</span>'
+                    : h($s['logout_at'] ?? '-') ?></td>
+            <td><?= $isActive
+                    ? '<span class="pill pill-muted">In progress</span>'
+                    : h($durStr ?? '-') ?></td>
+            <td style="color:#9fb0d0;font-size:12px;"><?= h($s['ip'] ?? '') ?></td>
+          </tr>
+        <?php endforeach; ?>
+      </tbody>
+    </table>
+  <?php endif; ?>
+<?php endif; ?>
+
 </body>
 </html>

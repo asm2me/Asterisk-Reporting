@@ -80,6 +80,17 @@ use function buildUrl;
     tbody td{display:flex;gap:10px;justify-content:space-between;border-bottom:none;padding:8px 0;}
     tbody td::before{content: attr(data-label);color: var(--muted);font-size:12px;font-weight:600;}
   }
+
+  /* Availability report */
+  .avail-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:14px;}
+  @media(min-width:600px){.avail-grid{grid-template-columns:repeat(4,1fr);}}
+  .avail-card{background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:12px;padding:12px 14px;text-align:center;}
+  .avail-k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;}
+  .avail-v{font-size:28px;font-weight:700;margin-top:4px;}
+  .avail-available .avail-v{color:var(--ok);}
+  .avail-break     .avail-v{color:var(--warn);}
+  .avail-oncall    .avail-v{color:var(--accent);}
+  .avail-offline   .avail-v{color:#888;}
 </style>
 </head>
 <body>
@@ -150,6 +161,51 @@ use function buildUrl;
     </table>
   </div>
 
+  <!-- Agent Availability / Breaks Report -->
+  <div class="card" style="margin-bottom:12px;">
+    <h3 style="margin:0 0 12px 0;font-size:16px;">🧍 Agent Availability / Breaks</h3>
+
+    <!-- Summary mini-cards -->
+    <div class="avail-grid">
+      <div class="avail-card avail-available">
+        <div class="avail-k">Available</div>
+        <div class="avail-v" id="availCount">0</div>
+      </div>
+      <div class="avail-card avail-break">
+        <div class="avail-k">On Break</div>
+        <div class="avail-v" id="breakCount">0</div>
+      </div>
+      <div class="avail-card avail-oncall">
+        <div class="avail-k">On Call</div>
+        <div class="avail-v" id="oncallCount">0</div>
+      </div>
+      <div class="avail-card avail-offline">
+        <div class="avail-k">Offline</div>
+        <div class="avail-v" id="offlineCount">0</div>
+      </div>
+    </div>
+
+    <!-- Availability detail table -->
+    <div class="tableWrap" style="padding:0;">
+      <table>
+        <thead>
+          <tr>
+            <th>Extension</th>
+            <th>Name</th>
+            <th>FOP2 Presence</th>
+            <th>Phone (SIP)</th>
+            <th>Call Status</th>
+            <th>Availability</th>
+            <th>Note</th>
+          </tr>
+        </thead>
+        <tbody id="availabilityTable">
+          <tr><td colspan="7" style="color:var(--muted);padding:16px;text-align:center;">No data</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- Active Calls Table -->
   <div class="card tableWrap">
     <h3 style="margin:0 0 12px 0;font-size:16px;">Active Calls</h3>
@@ -200,6 +256,96 @@ function escapeHtml(str) {
   div.textContent = str;
   return div.innerHTML;
 }
+
+// ─── FOP2 presence label helpers ─────────────────────────────────────────────
+const SUBTYPE_LABELS = {
+  break: 'On Break', lunch: 'At Lunch', training: 'Training',
+  meeting: 'In Meeting', away: 'Away', dnd: 'DND',
+};
+
+function fop2Label(pstate, psubtype) {
+  if (pstate === 'dnd')  return 'DND';
+  if (pstate === 'away' || pstate === 'xa') {
+    const sub = (psubtype || '').toLowerCase();
+    return SUBTYPE_LABELS[sub] || (psubtype ? psubtype.charAt(0).toUpperCase() + psubtype.slice(1) : 'Away');
+  }
+  return 'Available';   // available | chat | empty → Available
+}
+
+function fop2Class(pstate) {
+  if (pstate === 'dnd')              return 'busy';
+  if (pstate === 'away' || pstate === 'xa') return 'warn';
+  return 'online';
+}
+
+function renderAvailabilityReport(kpis) {
+  let cntAvail = 0, cntBreak = 0, cntOnCall = 0, cntOffline = 0;
+
+  const rows = kpis.map(kpi => {
+    const avail    = kpi.availability    || 'offline';
+    const pstate   = kpi.presence_state  || 'available';
+    const psubtype = kpi.presence_subtype || '';
+    const pnote    = kpi.presence_note   || '';
+
+    // Count buckets
+    if      (avail === 'available')                cntAvail++;
+    else if (avail === 'break' || avail === 'dnd') cntBreak++;
+    else if (avail === 'on_call' || avail === 'ringing') cntOnCall++;
+    else                                           cntOffline++;
+
+    // FOP2 presence pill
+    const fl = fop2Label(pstate, psubtype);
+    const fc = fop2Class(pstate);
+
+    // SIP pill  (offline only when status === 'offline')
+    const sipOnline = (kpi.status !== 'offline');
+    const sipLabel  = sipOnline ? 'Online' : 'Offline';
+    const sipClass  = sipOnline ? 'online' : 'offline';
+
+    // Call status pill
+    const callMap = {
+      'in-call': ['In Call',  'active'],
+      'ringing': ['Ringing',  'ringing'],
+      'on-hold': ['On Hold',  'warn'],
+      'paused':  ['Paused',   'paused'],
+      'busy':    ['Busy',     'busy'],
+      'online':  ['Idle',     'online'],
+      'offline': ['-',        'offline'],
+    };
+    const [callLabel, callClass] = callMap[kpi.status] || [kpi.status || '-', 'offline'];
+
+    // Availability pill
+    const availMap = {
+      available: ['Available', 'active'],
+      on_call:   ['On Call',   'active'],
+      ringing:   ['Ringing',   'ringing'],
+      break:     [psubtype ? (psubtype.charAt(0).toUpperCase() + psubtype.slice(1)) : 'On Break', 'warn'],
+      dnd:       ['DND',       'busy'],
+      offline:   ['Offline',   'offline'],
+    };
+    const [availLabel, availClass] = availMap[avail] || ['Offline', 'offline'];
+
+    return `
+      <tr>
+        <td data-label="Extension"><strong>${escapeHtml(kpi.extension || '-')}</strong></td>
+        <td data-label="Name">${escapeHtml(kpi.caller_id || '-')}</td>
+        <td data-label="FOP2 Presence"><span class="status ${fc}">${fl}</span></td>
+        <td data-label="Phone (SIP)"><span class="status ${sipClass}">${sipLabel}</span></td>
+        <td data-label="Call Status"><span class="status ${callClass}">${escapeHtml(callLabel)}</span></td>
+        <td data-label="Availability"><span class="status ${availClass}">${escapeHtml(availLabel)}</span></td>
+        <td data-label="Note" style="color:var(--muted);font-size:12px;">${escapeHtml(pnote)}</td>
+      </tr>`;
+  }).join('');
+
+  document.getElementById('availCount').textContent  = cntAvail;
+  document.getElementById('breakCount').textContent  = cntBreak;
+  document.getElementById('oncallCount').textContent = cntOnCall;
+  document.getElementById('offlineCount').textContent = cntOffline;
+
+  const tbody = document.getElementById('availabilityTable');
+  tbody.innerHTML = rows || '<tr><td colspan="7" style="color:var(--muted);padding:16px;text-align:center;">No data</td></tr>';
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 function updateDisplay(data) {
   data = filterByPermissions(data);
@@ -287,6 +433,9 @@ function updateDisplay(data) {
     `;
     }).join('');
   }
+
+  // Update Agent Availability / Breaks report
+  renderAvailabilityReport(kpis);
 
   // Update Active Calls table
   const tbody = document.getElementById('callsTable');

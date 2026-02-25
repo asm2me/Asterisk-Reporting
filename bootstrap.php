@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/lib/helpers.php';
 require_once __DIR__ . '/lib/db_creds.php';          // ✅ global getDbCreds()
 require_once __DIR__ . '/lib/users_store.php';
+require_once __DIR__ . '/lib/sessions.php';          // ✅ session log
 require_once __DIR__ . '/lib/auth.php';
 require_once __DIR__ . '/lib/acl.php';
 require_once __DIR__ . '/lib/recordings.php';
