@@ -22,8 +22,8 @@ function rowAllowedByChannel(array $exts, string $ch, string $dch): bool {
     foreach ($exts as $e) {
         $e = (string)$e;
         if (
-            str_starts_with($ch,  "SIP/{$e}-")    || str_starts_with($dch, "SIP/{$e}-")    ||
-            str_starts_with($ch,  "PJSIP/{$e}-")  || str_starts_with($dch, "PJSIP/{$e}-")
+            strpos($ch,  "SIP/{$e}-")   === 0 || strpos($dch, "SIP/{$e}-")   === 0 ||
+            strpos($ch,  "PJSIP/{$e}-") === 0 || strpos($dch, "PJSIP/{$e}-") === 0
         ) {
             return true;
         }
