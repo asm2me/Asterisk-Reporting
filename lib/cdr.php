@@ -222,6 +222,8 @@ function fetchSummary(array $CONFIG, PDO $pdo, array $me, array $filters): array
       SELECT
         COALESCE(linkedid, uniqueid) AS grp_id,
         MAX(CASE WHEN disposition = 'ANSWERED' AND billsec > 0
+                      AND (channel REGEXP '^(PJSIP|SIP)/[0-9]+'
+                           OR dstchannel REGEXP '^(PJSIP|SIP)/[0-9]+')
                  THEN 1 ELSE 0 END)                                      AS any_bridged,
         MAX(CASE WHEN dcontext LIKE '%ext-queues%'
                  THEN 1 ELSE 0 END)                                      AS any_queue,
@@ -365,6 +367,8 @@ function fetchPageRows(array $CONFIG, PDO $pdo, array $me, array $filters): arra
             COALESCE(linkedid, uniqueid) AS grp_id,
             COUNT(*) AS leg_count,
             MAX(CASE WHEN disposition = 'ANSWERED' AND billsec > 0
+                          AND (channel REGEXP '^(PJSIP|SIP)/[0-9]+'
+                               OR dstchannel REGEXP '^(PJSIP|SIP)/[0-9]+')
                      THEN 1 ELSE 0 END) AS any_bridged,
             MAX(CASE WHEN dcontext LIKE '%ext-queues%'
                      THEN 1 ELSE 0 END) AS any_queue,
