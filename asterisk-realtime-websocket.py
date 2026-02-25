@@ -63,8 +63,9 @@ connected_clients: Set[WebSocketServerProtocol] = set()
 extension_stats_db: Dict[str, Dict[str, Any]] = {}
 last_db_reload = 0
 DB_RELOAD_INTERVAL = 30
-presence_prev: Dict[str, Dict[str, str]] = {}
-break_history: Dict[str, list] = {}
+presence_states: Dict[str, Dict[str, str]] = {}   # updated by event listener
+presence_prev:   Dict[str, Dict[str, str]] = {}   # snapshot for transition detection
+break_history:   Dict[str, list]           = {}
 
 
 class AsteriskAMI:
@@ -615,6 +616,62 @@ def load_db_stats():
         print(f"⚠ Database stats load failed: {e}")
 
 
+_FOP2_DND_VALUES  = {'dnd', 'do not disturb'}
+_FOP2_AWAY_VALUES = {'break', 'lunch', 'meeting', 'training', 'away', 'xa', 'out', 'unavailable'}
+
+
+def fop2_value_to_state(value: str):
+    """Map a FOP2 Value label (e.g. 'Break') to (state, subtype)."""
+    v = value.lower().strip()
+    if v in _FOP2_DND_VALUES:
+        return ('dnd', 'dnd')
+    if v in _FOP2_AWAY_VALUES:
+        return ('away', v)
+    return ('available', '')
+
+
+def apply_fop2_event(ext: str, value: str) -> None:
+    """Apply a FOP2ASTDB UserEvent: update presence_states and break history."""
+    global presence_states, presence_prev, break_history
+
+    new_state, subtype = fop2_value_to_state(value)
+    old_state = presence_prev.get(ext, {}).get('state', 'available')
+
+    # Update live presence dict
+    presence_states[ext] = {'state': new_state, 'subtype': subtype, 'note': ''}
+
+    # Break history transition
+    today_str    = datetime.now().strftime('%Y-%m-%d')
+    now_ts       = datetime.now().strftime('%H:%M:%S')
+    away_states  = {'away', 'xa', 'dnd'}
+    avail_states = {'available', 'chat', ''}
+
+    hist = [e for e in break_history.get(ext, []) if e.get('date') == today_str]
+    break_history[ext] = hist
+
+    if old_state in avail_states and new_state in away_states:
+        break_history[ext].append({
+            'date': today_str, 'start': now_ts, 'end': None,
+            'subtype': subtype, 'note': '', 'duration': None,
+        })
+        print(f"[FOP2] {ext}: break started → {value}")
+    elif old_state in away_states and new_state in avail_states:
+        for entry in reversed(break_history[ext]):
+            if entry['end'] is None:
+                entry['end'] = now_ts
+                try:
+                    s = datetime.strptime(f"{today_str} {entry['start']}", '%Y-%m-%d %H:%M:%S')
+                    e = datetime.strptime(f"{today_str} {now_ts}",         '%Y-%m-%d %H:%M:%S')
+                    entry['duration'] = max(0, int((e - s).total_seconds()))
+                except Exception:
+                    entry['duration'] = 0
+                break
+        print(f"[FOP2] {ext}: break ended ← {value}")
+
+    # Advance snapshot
+    presence_prev[ext] = dict(presence_states[ext])
+
+
 def detect_presence_changes(current_presence: Dict[str, Dict[str, str]]) -> None:
     """Track FOP2 presence state transitions to build today's break history per extension."""
     global presence_prev, break_history
@@ -911,10 +968,11 @@ async def broadcast(data):
 
 async def ami_monitor_loop():
     """Main AMI monitoring loop"""
-    global last_db_reload
+    global last_db_reload, presence_states
 
     ami = None
     last_channel_count = 0
+    ami_just_connected = False
 
     while True:
         try:
@@ -927,14 +985,25 @@ async def ami_monitor_loop():
                 if not await ami.login():
                     await asyncio.sleep(10)
                     continue
+                ami_just_connected = True
+
+            # On (re)connect, do a one-shot AstDB sync to seed presence_states
+            # so the event listener has a valid baseline even before the first event.
+            if ami_just_connected:
+                initial = await ami.get_presence_states()
+                for ext, pdata in initial.items():
+                    if ext not in presence_states:
+                        presence_states[ext] = pdata
+                        presence_prev[ext]   = dict(pdata)
+                ami_just_connected = False
+                print(f"✓ Seeded presence for {len(initial)} extensions from AstDB")
 
             # Get channels and extension states
             channels = await ami.get_channels()
             extension_states = await ami.get_extension_states()
             queue_status = await ami.get_queue_status()
             paused_extensions = await ami.get_queue_paused_members()
-            presence_states = await ami.get_presence_states()
-            detect_presence_changes(presence_states)
+            # presence_states is now maintained by ami_event_listener()
 
             current_count = len(channels)
 
@@ -946,7 +1015,7 @@ async def ami_monitor_loop():
 
             last_channel_count = current_count
 
-            # Process and broadcast
+            # Process and broadcast (presence_states maintained by ami_event_listener)
             data = process_channels(channels, extension_states, paused_extensions, presence_states)
 
             # Enrich KPI entries with break history data
@@ -994,6 +1063,70 @@ async def ami_monitor_loop():
             await asyncio.sleep(5)
 
 
+async def ami_event_listener():
+    """Dedicated AMI connection — watches UserEvent:FOP2ASTDB for real-time presence."""
+    while True:
+        writer = None
+        try:
+            reader, writer = await asyncio.open_connection(AMI_HOST, AMI_PORT)
+            await asyncio.wait_for(reader.readline(), timeout=5)  # banner
+
+            login = (
+                f"Action: Login\r\nUsername: {AMI_USER}\r\nSecret: {AMI_SECRET}\r\n"
+                f"Events: user\r\n\r\n"
+            )
+            writer.write(login.encode())
+            await writer.drain()
+
+            # Read login response
+            resp = b""
+            while b"\r\n\r\n" not in resp:
+                resp += await asyncio.wait_for(reader.read(4096), timeout=5)
+            if b"Success" not in resp:
+                print("✗ AMI event listener login failed")
+                await asyncio.sleep(10)
+                continue
+
+            print("✓ AMI event listener connected — watching FOP2ASTDB")
+            buf = b""
+
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(reader.read(4096), timeout=60)
+                except asyncio.TimeoutError:
+                    continue   # keepalive timeout — connection still alive
+                if not chunk:
+                    break
+                buf += chunk
+
+                # Process every complete event (double CRLF separator)
+                while b"\r\n\r\n" in buf:
+                    raw, buf = buf.split(b"\r\n\r\n", 1)
+                    fields = {}
+                    for line in raw.decode('utf-8', errors='replace').split('\r\n'):
+                        if ':' in line:
+                            k, _, v = line.partition(':')
+                            fields[k.strip()] = v.strip()
+
+                    if (fields.get('Event') == 'UserEvent'
+                            and fields.get('UserEvent') == 'FOP2ASTDB'):
+                        key   = fields.get('Key',   '')   # e.g. "PJSIP/102"
+                        value = fields.get('Value', '')   # e.g. "Break"
+                        ext   = re.sub(r'^(PJSIP|SIP)/', '', key, flags=re.IGNORECASE)
+                        if ext.isdigit():
+                            apply_fop2_event(ext, value)
+
+        except Exception as e:
+            print(f"⚠ AMI event listener error: {e}")
+            await asyncio.sleep(5)
+        finally:
+            if writer:
+                try:
+                    writer.close()
+                except Exception:
+                    pass
+
+
 async def main():
     """Main entry point"""
     print("\n" + "="*60)
@@ -1007,8 +1140,11 @@ async def main():
     print(f"\n🌐 Starting WebSocket server on ws://{WS_HOST}:{WS_PORT}")
 
     async with websockets.serve(handle_client, WS_HOST, WS_PORT):
-        # Start AMI monitor
-        await ami_monitor_loop()
+        # Run monitor loop and event listener concurrently
+        await asyncio.gather(
+            ami_monitor_loop(),
+            ami_event_listener(),
+        )
 
 
 if __name__ == '__main__':
