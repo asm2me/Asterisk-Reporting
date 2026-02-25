@@ -323,18 +323,28 @@ class AsteriskAMI:
 
             presence = {}
             text = buffer.decode('utf-8', errors='ignore')
+            # AstDB states in Asterisk presence format
+            _ast_presence_states = {'available', 'away', 'xa', 'dnd', 'chat', 'not_inuse'}
             for line in text.split('\n'):
-                # Line format: "/1001                 : away:break:On break"
+                # Line format: "/1001 : away:break:On break"  OR  "/1001 : Break" (FOP2 raw label)
                 m = re.search(r'/(\d+)\s*:\s*(.+)', line)
                 if m:
                     ext = m.group(1)
                     raw = m.group(2).strip()
                     parts = raw.split(':')
-                    presence[ext] = {
-                        'state':   parts[0].strip() if parts else 'available',
-                        'subtype': parts[1].strip() if len(parts) > 1 else '',
-                        'note':    parts[2].strip() if len(parts) > 2 else '',
-                    }
+                    raw_state = parts[0].strip()
+                    if raw_state.lower() in _ast_presence_states:
+                        # Standard Asterisk presence format (state:subtype:note)
+                        state = 'available' if raw_state.lower() == 'not_inuse' else raw_state.lower()
+                        presence[ext] = {
+                            'state':   state,
+                            'subtype': parts[1].strip() if len(parts) > 1 else '',
+                            'note':    parts[2].strip() if len(parts) > 2 else '',
+                        }
+                    else:
+                        # Raw FOP2 label (e.g. "Break", "Lunch") — convert via fop2_value_to_state
+                        state, subtype = fop2_value_to_state(raw_state)
+                        presence[ext] = {'state': state, 'subtype': subtype, 'note': ''}
             return presence
         except Exception as e:
             print(f"✗ Error getting presence states: {e}")
@@ -1003,7 +1013,14 @@ async def ami_monitor_loop():
             extension_states = await ami.get_extension_states()
             queue_status = await ami.get_queue_status()
             paused_extensions = await ami.get_queue_paused_members()
-            # presence_states is now maintained by ami_event_listener()
+
+            # Poll AstDB for presence every cycle — reliable fallback for missed events.
+            # detect_presence_changes() compares against presence_prev to detect transitions
+            # and update break_history without double-counting.
+            polled_presence = await ami.get_presence_states()
+            if polled_presence:
+                detect_presence_changes(polled_presence)
+                presence_states.update(polled_presence)
 
             current_count = len(channels)
 
@@ -1015,7 +1032,6 @@ async def ami_monitor_loop():
 
             last_channel_count = current_count
 
-            # Process and broadcast (presence_states maintained by ami_event_listener)
             data = process_channels(channels, extension_states, paused_extensions, presence_states)
 
             # Enrich KPI entries with break history data
