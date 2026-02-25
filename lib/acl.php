@@ -14,3 +14,20 @@ function aclWhereByChannel(array $exts, array &$params): string {
     return '(' . implode(' OR ', $out) . ')';
 }
 
+/**
+ * Check whether a CDR row's channel/dstchannel belongs to one of the
+ * allowed extensions. Mirrors the SQL logic in aclWhereByChannel().
+ */
+function rowAllowedByChannel(array $exts, string $ch, string $dch): bool {
+    foreach ($exts as $e) {
+        $e = (string)$e;
+        if (
+            str_starts_with($ch,  "SIP/{$e}-")    || str_starts_with($dch, "SIP/{$e}-")    ||
+            str_starts_with($ch,  "PJSIP/{$e}-")  || str_starts_with($dch, "PJSIP/{$e}-")
+        ) {
+            return true;
+        }
+    }
+    return false;
+}
+

@@ -657,6 +657,17 @@ function fetchExtensionKPIs(array $CONFIG, PDO $pdo, array $me, array $filters):
 // ---------------------------------------------------------------------------
 
 /**
+ * Format seconds as hh:mm:ss string for Excel cells.
+ */
+function secsToHms(int $secs): string {
+    $secs = max(0, $secs);
+    $h = intdiv($secs, 3600);
+    $m = intdiv($secs % 3600, 60);
+    $s = $secs % 60;
+    return sprintf('%02d:%02d:%02d', $h, $m, $s);
+}
+
+/**
  * Convert a 0-based column index to an Excel column letter (A, B, … Z, AA …).
  */
 function xlsxCol(int $idx): string {
@@ -817,20 +828,26 @@ function streamExcel(array $CONFIG, PDO $pdo, array $me, array $filters): void {
     }
     $st->execute();
 
-    $headers = ['Call Date','CLID','Src','Dst','Channel','Dst Channel','Context','Disposition','Duration','Billsec','UniqueID','Recording'];
+    $headers = ['Call Date','Direction','CLID','Src','Dst','Channel','Dst Channel','Context','Disposition','Duration','Billsec','UniqueID','Recording'];
     $rows = [];
     while ($r = $st->fetch()) {
+        $ch  = (string)($r['channel']    ?? '');
+        $dch = (string)($r['dstchannel'] ?? '');
+        $srcIsExt = (bool)preg_match('/^(PJSIP|SIP)\/[0-9]+/i', $ch);
+        $dstIsExt = (bool)preg_match('/^(PJSIP|SIP)\/[0-9]+/i', $dch);
+        $dir = $srcIsExt && $dstIsExt ? 'Internal' : ($srcIsExt ? 'Outbound' : 'Inbound');
         $rows[] = [
             (string)($r['calldate']     ?? ''),
+            $dir,
             (string)($r['clid']         ?? ''),
             (string)($r['src']          ?? ''),
             (string)($r['dst']          ?? ''),
-            (string)($r['channel']      ?? ''),
-            (string)($r['dstchannel']   ?? ''),
+            $ch,
+            $dch,
             (string)($r['dcontext']     ?? ''),
             (string)($r['disposition']  ?? ''),
-            (int)   ($r['duration']     ?? 0),
-            (int)   ($r['billsec']      ?? 0),
+            secsToHms((int)($r['duration']  ?? 0)),
+            secsToHms((int)($r['billsec']   ?? 0)),
             (string)($r['uniqueid']     ?? ''),
             (string)($r['recordingfile']?? ''),
         ];
