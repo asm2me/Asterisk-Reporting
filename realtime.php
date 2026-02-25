@@ -199,4 +199,32 @@ if ($action === 'stream') {
     exit;
 }
 
+/* Extension sessions API endpoint */
+if ($action === 'extension_sessions') {
+    header('Content-Type: application/json');
+    $sessionLog = loadSessionLog();
+    $todayStart = date('Y-m-d') . ' 00:00:00';
+    $summaryArr = getSessionSummary($sessionLog['sessions'], $todayStart);
+    // Re-index by username
+    $summaryByUser = [];
+    foreach ($summaryArr as $row) {
+        $summaryByUser[$row['username']] = $row;
+    }
+    $result = [];
+    foreach ($usersData['users'] ?? [] as $uname => $rec) {
+        $stats = $summaryByUser[$uname] ?? null;
+        foreach ($rec['extensions'] ?? [] as $ext) {
+            $result[(string)$ext] = [
+                'username'    => $uname,
+                'count'       => $stats ? (int)$stats['sessions_count'] : 0,
+                'total_secs'  => $stats ? (int)$stats['total_duration'] : 0,
+                'first_login' => $stats['first_login'] ?? '',
+                'last_logout' => $stats['last_logout'] ?? '',
+            ];
+        }
+    }
+    echo json_encode($result);
+    exit;
+}
+
 require __DIR__ . '/ui/realtime.php';

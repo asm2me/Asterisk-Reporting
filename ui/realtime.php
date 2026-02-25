@@ -153,10 +153,14 @@ use function buildUrl;
           <th>AHT</th>
           <th>First Call</th>
           <th>Last Call</th>
+          <th>Sessions</th>
+          <th>Online Time</th>
+          <th>Breaks</th>
+          <th>Break Time</th>
         </tr>
       </thead>
       <tbody id="kpisTable">
-        <tr><td colspan="14" style="color:var(--muted);padding:16px;text-align:center;">No extension data</td></tr>
+        <tr><td colspan="18" style="color:var(--muted);padding:16px;text-align:center;">No extension data</td></tr>
       </tbody>
     </table>
   </div>
@@ -197,10 +201,11 @@ use function buildUrl;
             <th>Call Status</th>
             <th>Availability</th>
             <th>Note</th>
+            <th>Break History</th>
           </tr>
         </thead>
         <tbody id="availabilityTable">
-          <tr><td colspan="7" style="color:var(--muted);padding:16px;text-align:center;">No data</td></tr>
+          <tr><td colspan="8" style="color:var(--muted);padding:16px;text-align:center;">No data</td></tr>
         </tbody>
       </table>
     </div>
@@ -244,11 +249,37 @@ function filterByPermissions(data) {
 
 let ws = null;
 let reconnectInterval = null;
+let sessionStats = {};
+
+function fetchSessionStats() {
+  fetch('realtime.php?action=extension_sessions')
+    .then(r => r.json())
+    .then(d => { sessionStats = d || {}; })
+    .catch(() => {});
+}
 
 function formatDuration(seconds) {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function formatHMS(seconds) {
+  if (!seconds) return '0:00';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  return (h > 0 ? `${h}h ` : '') + `${m}m ${s.toString().padStart(2, '0')}s`;
+}
+
+function buildBreakHistory(history) {
+  if (!history || !history.length) return '<span style="color:var(--muted);font-size:11px;">—</span>';
+  return history.map(e => {
+    const sub  = e.subtype ? ` <em style="color:var(--muted);font-size:10px;">(${escapeHtml(e.subtype)})</em>` : '';
+    const dur  = e.duration != null ? ` ${formatDuration(e.duration)}` : '';
+    const end  = e.end || '(ongoing)';
+    return `<div style="font-size:11px;white-space:nowrap;">${escapeHtml(e.start)}–${escapeHtml(end)}${sub}${dur ? ` <strong>${dur}</strong>` : ''}</div>`;
+  }).join('');
 }
 
 function escapeHtml(str) {
@@ -334,6 +365,7 @@ function renderAvailabilityReport(kpis) {
         <td data-label="Call Status"><span class="status ${callClass}">${escapeHtml(callLabel)}</span></td>
         <td data-label="Availability"><span class="status ${availClass}">${escapeHtml(availLabel)}</span></td>
         <td data-label="Note" style="color:var(--muted);font-size:12px;">${escapeHtml(pnote)}</td>
+        <td data-label="Break History">${buildBreakHistory(kpi.break_history)}</td>
       </tr>`;
   }).join('');
 
@@ -343,7 +375,7 @@ function renderAvailabilityReport(kpis) {
   document.getElementById('offlineCount').textContent = cntOffline;
 
   const tbody = document.getElementById('availabilityTable');
-  tbody.innerHTML = rows || '<tr><td colspan="7" style="color:var(--muted);padding:16px;text-align:center;">No data</td></tr>';
+  tbody.innerHTML = rows || '<tr><td colspan="8" style="color:var(--muted);padding:16px;text-align:center;">No data</td></tr>';
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -369,7 +401,7 @@ function updateDisplay(data) {
   const kpisTable = document.getElementById('kpisTable');
   const kpis = data.extension_kpis || [];
   if (kpis.length === 0) {
-    kpisTable.innerHTML = '<tr><td colspan="14" style="color:var(--muted);padding:16px;text-align:center;">No extension data</td></tr>';
+    kpisTable.innerHTML = '<tr><td colspan="18" style="color:var(--muted);padding:16px;text-align:center;">No extension data</td></tr>';
   } else {
     kpisTable.innerHTML = kpis.map(kpi => {
       let statusClass, statusText;
@@ -429,6 +461,10 @@ function updateDisplay(data) {
         <td data-label="AHT">${formatDuration(kpi.aht || 0)}</td>
         <td data-label="First Call">${escapeHtml(kpi.first_call_start || '-')}</td>
         <td data-label="Last Call">${escapeHtml(kpi.last_call_end || '-')}</td>
+        <td data-label="Sessions">${(sessionStats[kpi.extension] || {}).count || 0}</td>
+        <td data-label="Online Time">${formatHMS((sessionStats[kpi.extension] || {}).total_secs || 0)}</td>
+        <td data-label="Breaks">${kpi.breaks_today || 0}</td>
+        <td data-label="Break Time">${formatHMS(kpi.break_seconds_today || 0)}</td>
       </tr>
     `;
     }).join('');
@@ -525,6 +561,10 @@ function connectWebSocket() {
 // Initialize WebSocket connection
 console.log('Starting WebSocket realtime connection...');
 connectWebSocket();
+
+// Fetch session stats on load and every 30 s
+fetchSessionStats();
+setInterval(fetchSessionStats, 30000);
 </script>
 </body>
 </html>

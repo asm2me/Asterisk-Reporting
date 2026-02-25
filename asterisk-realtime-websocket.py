@@ -63,6 +63,8 @@ connected_clients: Set[WebSocketServerProtocol] = set()
 extension_stats_db: Dict[str, Dict[str, Any]] = {}
 last_db_reload = 0
 DB_RELOAD_INTERVAL = 30
+presence_prev: Dict[str, Dict[str, str]] = {}
+break_history: Dict[str, list] = {}
 
 
 class AsteriskAMI:
@@ -613,6 +615,50 @@ def load_db_stats():
         print(f"⚠ Database stats load failed: {e}")
 
 
+def detect_presence_changes(current_presence: Dict[str, Dict[str, str]]) -> None:
+    """Track FOP2 presence state transitions to build today's break history per extension."""
+    global presence_prev, break_history
+    today_str    = datetime.now().strftime('%Y-%m-%d')
+    now_ts       = datetime.now().strftime('%H:%M:%S')
+    away_states  = {'away', 'xa', 'dnd'}
+    avail_states = {'available', 'chat', ''}
+
+    for ext, cur in current_presence.items():
+        prev   = presence_prev.get(ext, {})
+        prev_s = prev.get('state', 'available')
+        cur_s  = cur.get('state', 'available')
+
+        # Keep only today's history
+        hist = [e for e in break_history.get(ext, []) if e.get('date') == today_str]
+        break_history[ext] = hist
+
+        if prev_s in avail_states and cur_s in away_states:
+            # Break started
+            break_history[ext].append({
+                'date':     today_str,
+                'start':    now_ts,
+                'end':      None,
+                'subtype':  cur.get('subtype', ''),
+                'note':     cur.get('note', ''),
+                'duration': None,
+            })
+        elif prev_s in away_states and cur_s in avail_states:
+            # Break ended — close the last open entry
+            for entry in reversed(break_history[ext]):
+                if entry['end'] is None:
+                    entry['end'] = now_ts
+                    try:
+                        start_dt = datetime.strptime(f"{today_str} {entry['start']}", '%Y-%m-%d %H:%M:%S')
+                        end_dt   = datetime.strptime(f"{today_str} {now_ts}",         '%Y-%m-%d %H:%M:%S')
+                        entry['duration'] = max(0, int((end_dt - start_dt).total_seconds()))
+                    except Exception:
+                        entry['duration'] = 0
+                    break
+
+    # Update snapshot for next cycle
+    presence_prev.update({ext: dict(d) for ext, d in current_presence.items()})
+
+
 def process_channels(channels, extension_states=None, paused_extensions=None, presence_states=None):
     """Process channel data into structured format"""
     if extension_states is None:
@@ -888,6 +934,7 @@ async def ami_monitor_loop():
             queue_status = await ami.get_queue_status()
             paused_extensions = await ami.get_queue_paused_members()
             presence_states = await ami.get_presence_states()
+            detect_presence_changes(presence_states)
 
             current_count = len(channels)
 
@@ -901,6 +948,34 @@ async def ami_monitor_loop():
 
             # Process and broadcast
             data = process_channels(channels, extension_states, paused_extensions, presence_states)
+
+            # Enrich KPI entries with break history data
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            now_dt    = datetime.now()
+            for kpi in data.get('extension_kpis', []):
+                ext       = kpi.get('extension', '')
+                hist      = [e for e in break_history.get(ext, []) if e.get('date') == today_str]
+                completed = [e for e in hist if e['end'] is not None]
+                open_brk  = next((e for e in reversed(hist) if e['end'] is None), None)
+                break_secs = sum(e['duration'] or 0 for e in completed)
+                if open_brk:
+                    try:
+                        start_dt = datetime.strptime(f"{today_str} {open_brk['start']}", '%Y-%m-%d %H:%M:%S')
+                        break_secs += max(0, int((now_dt - start_dt).total_seconds()))
+                    except Exception:
+                        pass
+                kpi['breaks_today']        = len(hist)
+                kpi['break_seconds_today'] = break_secs
+                kpi['break_history']       = [
+                    {
+                        'start':    e['start'],
+                        'end':      e['end'] or '(ongoing)',
+                        'duration': e['duration'],
+                        'subtype':  e.get('subtype', ''),
+                        'note':     e.get('note', ''),
+                    }
+                    for e in hist
+                ]
 
             # Add queue data
             data['queues'] = process_queue_data(queue_status)
