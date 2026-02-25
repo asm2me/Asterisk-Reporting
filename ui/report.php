@@ -116,7 +116,10 @@ $gateway = (string)($filters['gateway'] ?? '');
 
   .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:rgba(232,238,252,.85);word-break:break-all}
 
-  .tableWrap{padding:0;overflow:auto;-webkit-overflow-scrolling:touch}
+  .tableWrap{padding:0;}
+  .disp.inbound{border-color:rgba(59,130,246,.25);color:#60a5fa;background:rgba(59,130,246,.08)}
+  .disp.outbound{border-color:rgba(168,85,247,.25);color:#c084fc;background:rgba(168,85,247,.08)}
+  .disp.internal{border-color:rgba(251,191,36,.25);color:#fbbf24;background:rgba(251,191,36,.08)}
   audio{width:300px;max-width:100%}
   thead th:last-child,tbody td:last-child{min-width:320px;}
 
@@ -306,6 +309,7 @@ $gateway = (string)($filters['gateway'] ?? '');
         <tr>
           <th style="width:30px;"></th>
           <th><?= sortLink('calldate','Call Date',$sort,$dir) ?></th>
+          <th>Direction</th>
           <th>CLID</th>
           <th><?= sortLink('src','SRC',$sort,$dir) ?></th>
           <th><?= sortLink('dst','DST',$sort,$dir) ?></th>
@@ -330,28 +334,34 @@ $gateway = (string)($filters['gateway'] ?? '');
           // Raw disposition from the representative leg (fallback only)
           $d = strtoupper((string)($r['last_leg_status'] ?? $r['disposition'] ?? ''));
 
-          // Determine effective disposition from group-level flags so that a
-          // call answered on LEG1 is never shown as missed/abandoned just
-          // because the representative (last) CDR row has no dstchannel.
+          // Determine effective disposition from group-level flags.
+          // any_bridged=1 only when a real local extension answered (PJSIP/digits).
           if ($anyBridged) {
             $d   = 'ANSWERED';
             $cls = 'ok';
-          } elseif (!$anyBridged && $anyQueue) {
+          } elseif ($anyQueue) {
             $d   = 'ABANDONED';
             $cls = 'warn';
-          } elseif ($legCount === 1 && $d !== 'ANSWERED') {
-            // Single-leg, not bridged, not answered by CDR → missed
-            $d   = 'MISSED';
-            $cls = 'bad';
           } else {
-            $cls = 'warn';
-            if ($d === 'ANSWERED') $cls = 'ok';
-            elseif ($d === 'BUSY' || $d === 'FAILED' || $d === 'CONGESTION' || $d === 'CONGESTED') $cls = 'bad';
+            // Not bridged to a real extension — CDR 'ANSWERED' means IVR/voicemail only
+            if ($d === 'ANSWERED') {
+              $d = 'MISSED';
+            }
+            $cls = in_array($d, ['MISSED','NO ANSWER','NOANSWER','BUSY','FAILED','CONGESTION','CONGESTED'], true) ? 'bad' : 'warn';
           }
+
+          // Call direction
+          $chanVal  = (string)($r['channel'] ?? '');
+          $dstChVal = (string)($r['dstchannel'] ?? '');
+          $srcIsExt = (bool)preg_match('/^(PJSIP|SIP)\/[0-9]+/i', $chanVal);
+          $dstIsExt = (bool)preg_match('/^(PJSIP|SIP)\/[0-9]+/i', $dstChVal);
+          if ($srcIsExt && $dstIsExt)  { $callDir = 'Internal'; $callDirCls = 'internal'; }
+          elseif ($srcIsExt)            { $callDir = 'Outbound'; $callDirCls = 'outbound'; }
+          else                          { $callDir = 'Inbound';  $callDirCls = 'inbound';  }
 
           $uidVal = (string)($r['uniqueid'] ?? '');
           $recVal = trim((string)($r['recordingfile'] ?? ''));
-          $hasRec = ($uidVal !== '' && $recVal !== '');
+          $hasRec = $uidVal !== '' && $recVal !== '';
           $playUrl = buildUrl(['action'=>'play','uid'=>$uidVal]);
           $dlUrl   = buildUrl(['action'=>'download','uid'=>$uidVal]);
           $rowId = 'row-' . $shown;
@@ -363,6 +373,7 @@ $gateway = (string)($filters['gateway'] ?? '');
               </span>
             </td>
             <td data-label="Call Date"><?= h((string)($r['calldate'] ?? '')) ?></td>
+            <td data-label="Direction"><span class="disp <?= $callDirCls ?>"><?= $callDir ?></span></td>
             <td data-label="CLID"><?= h((string)($r['clid'] ?? '')) ?></td>
             <td data-label="SRC"><?= h((string)($r['src'] ?? '')) ?></td>
             <td data-label="DST"><?= h((string)($r['dst'] ?? '')) ?></td>
@@ -385,7 +396,7 @@ $gateway = (string)($filters['gateway'] ?? '');
             </td>
           </tr>
           <tr id="<?= h($rowId) ?>" class="detail-row" style="display:none;">
-            <td colspan="13">
+            <td colspan="14">
               <div class="detail-panel">
                 <?php
                 $linkedId = (string)($r['linkedid'] ?? $r['uniqueid'] ?? '');

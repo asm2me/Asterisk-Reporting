@@ -470,7 +470,7 @@ function streamCsv(array $CONFIG, PDO $pdo, array $me, array $filters): void {
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="cdr_'.$from.'_to_'.$to.'.csv"');
 
-    echo csvRow(['calldate','clid','src','dst','channel','dstchannel','dcontext','disposition','duration','billsec','uniqueid','recordingfile']);
+    echo csvRow(['calldate','direction','clid','src','dst','channel','dstchannel','dcontext','disposition','duration','billsec','uniqueid','recordingfile']);
 
     $csvSql = "
     SELECT calldate, clid, src, dst, channel, dstchannel, dcontext, disposition, duration, billsec, uniqueid, recordingfile
@@ -489,13 +489,19 @@ function streamCsv(array $CONFIG, PDO $pdo, array $me, array $filters): void {
     }
     $st->execute();
     while ($r = $st->fetch()) {
+        $ch  = (string)($r['channel']    ?? '');
+        $dch = (string)($r['dstchannel'] ?? '');
+        $srcIsExt = (bool)preg_match('/^(PJSIP|SIP)\/[0-9]+/i', $ch);
+        $dstIsExt = (bool)preg_match('/^(PJSIP|SIP)\/[0-9]+/i', $dch);
+        $csvDir = $srcIsExt && $dstIsExt ? 'Internal' : ($srcIsExt ? 'Outbound' : 'Inbound');
         echo csvRow([
             $r['calldate'] ?? '',
+            $csvDir,
             $r['clid'] ?? '',
             $r['src'] ?? '',
             $r['dst'] ?? '',
-            $r['channel'] ?? '',
-            $r['dstchannel'] ?? '',
+            $ch,
+            $dch,
             $r['dcontext'] ?? '',
             $r['disposition'] ?? '',
             $r['duration'] ?? '',
