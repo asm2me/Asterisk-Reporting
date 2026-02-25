@@ -121,7 +121,8 @@ $gateway = (string)($filters['gateway'] ?? '');
   .disp.outbound{border-color:rgba(168,85,247,.25);color:#c084fc;background:rgba(168,85,247,.08)}
   .disp.internal{border-color:rgba(251,191,36,.25);color:#fbbf24;background:rgba(251,191,36,.08)}
   .rec-row td{padding:6px 10px 10px 10px;border-bottom:1px solid var(--line);}
-  .rec-row audio{width:100%;max-width:420px;display:block;margin-top:4px;}
+  .rec-row .rec-inner{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  .rec-row audio{flex:1 1 260px;min-width:0;max-width:420px;}
   @media (max-width: 900px){.rec-row{display:block;padding:0 10px 10px;}}
 
   .pager{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;flex-wrap:wrap}
@@ -320,7 +321,6 @@ $gateway = (string)($filters['gateway'] ?? '');
           <th><?= sortLink('disposition','Disposition',$sort,$dir) ?></th>
           <th><?= sortLink('billsec','Billsec',$sort,$dir) ?></th>
           <th class="mono">UniqueID</th>
-          <th>Recording</th>
         </tr>
       </thead>
       <tbody>
@@ -384,25 +384,19 @@ $gateway = (string)($filters['gateway'] ?? '');
             <td data-label="Disposition"><span class="disp <?= h($cls) ?>"><?= h($d) ?></span></td>
             <td data-label="Billsec"><?= h((string)($r['billsec'] ?? '0')) ?></td>
             <td data-label="UniqueID" class="mono"><?= h($uidVal) ?></td>
-            <td data-label="Recording">
-              <?php if ($hasRec): ?>
-                <span class="mono" style="opacity:.7;font-size:11px;"><?= h($recVal) ?></span><br>
-                <a href="<?= h($playUrl) ?>" target="_blank">Listen</a> ·
-                <a href="<?= h($dlUrl) ?>">Download</a>
-              <?php else: ?>
-                <span class="pill">—</span>
-              <?php endif; ?>
-            </td>
           </tr>
           <?php if ($hasRec): ?>
           <tr class="rec-row">
-            <td colspan="14">
-              <audio controls preload="none" src="<?= h($playUrl) ?>"></audio>
+            <td colspan="13">
+              <div class="rec-inner">
+                <audio controls preload="none" src="<?= h($playUrl) ?>"></audio>
+                <a class="btn" href="<?= h($dlUrl) ?>">⬇ Download</a>
+              </div>
             </td>
           </tr>
           <?php endif; ?>
           <tr id="<?= h($rowId) ?>" class="detail-row" style="display:none;">
-            <td colspan="14">
+            <td colspan="13">
               <div class="detail-panel">
                 <?php
                 $linkedId = (string)($r['linkedid'] ?? $r['uniqueid'] ?? '');
@@ -489,7 +483,7 @@ $gateway = (string)($filters['gateway'] ?? '');
           </tr>
         <?php endforeach; ?>
         <?php if ($shown === 0): ?>
-          <tr><td colspan="12" style="color:var(--muted);padding:16px;">No records for this filter.</td></tr>
+          <tr><td colspan="13" style="color:var(--muted);padding:16px;">No records for this filter.</td></tr>
         <?php endif; ?>
       </tbody>
     </table>
