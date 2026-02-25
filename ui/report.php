@@ -120,8 +120,9 @@ $gateway = (string)($filters['gateway'] ?? '');
   .disp.inbound{border-color:rgba(59,130,246,.25);color:#60a5fa;background:rgba(59,130,246,.08)}
   .disp.outbound{border-color:rgba(168,85,247,.25);color:#c084fc;background:rgba(168,85,247,.08)}
   .disp.internal{border-color:rgba(251,191,36,.25);color:#fbbf24;background:rgba(251,191,36,.08)}
-  audio{width:300px;max-width:100%}
-  thead th:last-child,tbody td:last-child{min-width:320px;}
+  .rec-row td{padding:6px 10px 10px 10px;border-bottom:1px solid var(--line);}
+  .rec-row audio{width:100%;max-width:420px;display:block;margin-top:4px;}
+  @media (max-width: 900px){.rec-row{display:block;padding:0 10px 10px;}}
 
   .pager{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;flex-wrap:wrap}
   .pager .left{color:var(--muted);font-size:12px}
@@ -152,7 +153,6 @@ $gateway = (string)($filters['gateway'] ?? '');
     tbody td{display:flex;gap:10px;justify-content:space-between;border-bottom:none;padding:8px 0;}
     tbody td::before{content: attr(data-label);color: var(--muted);font-size:12px;font-weight:600;padding-right:10px;white-space:nowrap;}
     tbody td[data-label="Recording"]{flex-direction:column;align-items:flex-start;}
-    audio{width:100%;}
   }
 </style>
 </head>
@@ -386,8 +386,7 @@ $gateway = (string)($filters['gateway'] ?? '');
             <td data-label="UniqueID" class="mono"><?= h($uidVal) ?></td>
             <td data-label="Recording">
               <?php if ($hasRec): ?>
-                <div class="mono" style="opacity:.7; margin-bottom:6px;"><?= h($recVal) ?></div>
-                <audio controls preload="none" src="<?= h($playUrl) ?>"></audio><br>
+                <span class="mono" style="opacity:.7;font-size:11px;"><?= h($recVal) ?></span><br>
                 <a href="<?= h($playUrl) ?>" target="_blank">Listen</a> ·
                 <a href="<?= h($dlUrl) ?>">Download</a>
               <?php else: ?>
@@ -395,6 +394,13 @@ $gateway = (string)($filters['gateway'] ?? '');
               <?php endif; ?>
             </td>
           </tr>
+          <?php if ($hasRec): ?>
+          <tr class="rec-row">
+            <td colspan="14">
+              <audio controls preload="none" src="<?= h($playUrl) ?>"></audio>
+            </td>
+          </tr>
+          <?php endif; ?>
           <tr id="<?= h($rowId) ?>" class="detail-row" style="display:none;">
             <td colspan="14">
               <div class="detail-panel">
