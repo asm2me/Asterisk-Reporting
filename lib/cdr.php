@@ -652,6 +652,169 @@ function fetchExtensionKPIs(array $CONFIG, PDO $pdo, array $me, array $filters):
     }
 }
 
+/**
+ * Fetch per-extension agent event KPIs from the agent_event table.
+ * Returns an associative array keyed by extension:
+ *   [ext => [first_login, last_logout, login_count, logout_count,
+ *            pause_count, unpause_count, total_pause_sec, online_sec]]
+ */
+function fetchAgentEventKPIs(PDO $pdo, array $me, string $from, string $to): array {
+    // Check if agent_event table exists
+    try {
+        $pdo->query("SELECT 1 FROM agent_event LIMIT 1");
+    } catch (Throwable $e) {
+        return [];  // table doesn't exist yet
+    }
+
+    $fromDt = $from . ' 00:00:00';
+    $toDt   = $to   . ' 23:59:59';
+
+    // ACL: non-admin users only see their allowed extensions
+    $aclSql = '1=1';
+    $aclParams = [];
+    if (empty($me['is_admin'])) {
+        $allowedExts = (array)($me['extensions'] ?? []);
+        if (count($allowedExts) === 0) return [];
+        $placeholders = [];
+        foreach ($allowedExts as $i => $ext) {
+            $k = ':ae_ext_' . $i;
+            $placeholders[] = $k;
+            $aclParams[$k] = $ext;
+        }
+        $aclSql = 'extension IN (' . implode(',', $placeholders) . ')';
+    }
+
+    $sql = "
+    SELECT
+        extension,
+        MIN(CASE WHEN event_type = 'LOGIN'  THEN event_time END)         AS first_login,
+        MAX(CASE WHEN event_type = 'LOGOUT' THEN event_time END)         AS last_logout,
+        SUM(CASE WHEN event_type = 'LOGIN'   THEN 1 ELSE 0 END)         AS login_count,
+        SUM(CASE WHEN event_type = 'LOGOUT'  THEN 1 ELSE 0 END)         AS logout_count,
+        SUM(CASE WHEN event_type = 'PAUSE'   THEN 1 ELSE 0 END)         AS pause_count,
+        SUM(CASE WHEN event_type = 'UNPAUSE' THEN 1 ELSE 0 END)         AS unpause_count
+    FROM agent_event
+    WHERE event_time >= :fromDt AND event_time <= :toDt
+      AND {$aclSql}
+    GROUP BY extension
+    ";
+
+    $params = array_merge([':fromDt' => $fromDt, ':toDt' => $toDt], $aclParams);
+
+    try {
+        $st = $pdo->prepare($sql);
+        foreach ($params as $k => $v) {
+            $st->bindValue($k, (string)$v, PDO::PARAM_STR);
+        }
+        $st->execute();
+        $rows = $st->fetchAll() ?: [];
+    } catch (Throwable $e) {
+        return [];
+    }
+
+    // Now calculate pause durations by fetching paired PAUSE/UNPAUSE events
+    $pauseSql = "
+    SELECT extension, event_type, event_time
+    FROM agent_event
+    WHERE event_time >= :fromDt AND event_time <= :toDt
+      AND event_type IN ('PAUSE','UNPAUSE')
+      AND {$aclSql}
+    ORDER BY extension, event_time
+    ";
+
+    try {
+        $st2 = $pdo->prepare($pauseSql);
+        foreach ($params as $k => $v) {
+            $st2->bindValue($k, (string)$v, PDO::PARAM_STR);
+        }
+        $st2->execute();
+        $pauseRows = $st2->fetchAll() ?: [];
+    } catch (Throwable $e) {
+        $pauseRows = [];
+    }
+
+    // Calculate total pause seconds per extension
+    $pauseSecs = [];
+    $openPause = [];  // ext => pause_start_timestamp
+    foreach ($pauseRows as $pr) {
+        $ext = $pr['extension'];
+        $ts  = strtotime($pr['event_time']);
+        if ($pr['event_type'] === 'PAUSE') {
+            if (!isset($openPause[$ext])) {
+                $openPause[$ext] = $ts;
+            }
+        } else { // UNPAUSE
+            if (isset($openPause[$ext])) {
+                $pauseSecs[$ext] = ($pauseSecs[$ext] ?? 0) + max(0, $ts - $openPause[$ext]);
+                unset($openPause[$ext]);
+            }
+        }
+    }
+    // Close any still-open pauses at the end of the period (or now if today)
+    $periodEnd = min(time(), strtotime($toDt));
+    foreach ($openPause as $ext => $startTs) {
+        $pauseSecs[$ext] = ($pauseSecs[$ext] ?? 0) + max(0, $periodEnd - $startTs);
+    }
+
+    // Similarly calculate online duration from LOGIN/LOGOUT pairs
+    $onlineSql = "
+    SELECT extension, event_type, event_time
+    FROM agent_event
+    WHERE event_time >= :fromDt AND event_time <= :toDt
+      AND event_type IN ('LOGIN','LOGOUT')
+      AND {$aclSql}
+    ORDER BY extension, event_time
+    ";
+
+    try {
+        $st3 = $pdo->prepare($onlineSql);
+        foreach ($params as $k => $v) {
+            $st3->bindValue($k, (string)$v, PDO::PARAM_STR);
+        }
+        $st3->execute();
+        $onlineRows = $st3->fetchAll() ?: [];
+    } catch (Throwable $e) {
+        $onlineRows = [];
+    }
+
+    $onlineSecs = [];
+    $openLogin = [];
+    foreach ($onlineRows as $or) {
+        $ext = $or['extension'];
+        $ts  = strtotime($or['event_time']);
+        if ($or['event_type'] === 'LOGIN') {
+            if (!isset($openLogin[$ext])) {
+                $openLogin[$ext] = $ts;
+            }
+        } else { // LOGOUT
+            if (isset($openLogin[$ext])) {
+                $onlineSecs[$ext] = ($onlineSecs[$ext] ?? 0) + max(0, $ts - $openLogin[$ext]);
+                unset($openLogin[$ext]);
+            }
+        }
+    }
+    foreach ($openLogin as $ext => $startTs) {
+        $onlineSecs[$ext] = ($onlineSecs[$ext] ?? 0) + max(0, $periodEnd - $startTs);
+    }
+
+    // Build result keyed by extension
+    $result = [];
+    foreach ($rows as $row) {
+        $ext = $row['extension'];
+        $result[$ext] = [
+            'first_login'   => $row['first_login'],
+            'last_logout'   => $row['last_logout'],
+            'login_count'   => (int)$row['login_count'],
+            'logout_count'  => (int)$row['logout_count'],
+            'pause_count'   => (int)$row['pause_count'],
+            'unpause_count' => (int)$row['unpause_count'],
+            'total_pause_sec' => (int)($pauseSecs[$ext] ?? 0),
+            'online_sec'    => (int)($onlineSecs[$ext] ?? 0),
+        ];
+    }
+    return $result;
+}
+
 // ---------------------------------------------------------------------------
 // Excel (XLSX) export helpers
 // ---------------------------------------------------------------------------
@@ -861,13 +1024,16 @@ function streamExcel(array $CONFIG, PDO $pdo, array $me, array $filters): void {
 /**
  * Export KPI data array as XLSX.
  */
-function streamExcelKpis(array $kpiData, string $from, string $to): void {
-    $headers = ['Extension','Total Calls','Answered','Missed','Abandoned','Busy','Failed','Answer Rate %','Avg Wait (sec)','Avg Talk (sec)','Total Talk (sec)'];
+function streamExcelKpis(array $kpiData, array $agentEvents, string $from, string $to): void {
+    $headers = ['Extension','Total Calls','Answered','Missed','Abandoned','Busy','Failed',
+                'Answer Rate %','Avg Wait (sec)','Avg Talk (sec)','Total Talk (sec)',
+                'First Login','Last Logout','Online Time (sec)','Pauses','Pause Time (sec)'];
     $rows = [];
     foreach ($kpiData as $ext) {
         $total  = (int)($ext['total_calls'] ?? 0);
         $ans    = (int)($ext['answered']    ?? 0);
         $rate   = $total > 0 ? round(($ans / $total) * 100, 1) : 0.0;
+        $ae     = $agentEvents[$ext['extension']] ?? [];
         $rows[] = [
             (string)($ext['extension']    ?? ''),
             $total,
@@ -880,6 +1046,11 @@ function streamExcelKpis(array $kpiData, string $from, string $to): void {
             (int)($ext['avg_wait_time']   ?? 0),
             (int)($ext['avg_talk_time']   ?? 0),
             (int)($ext['total_billsec']   ?? 0),
+            (string)($ae['first_login']   ?? ''),
+            (string)($ae['last_logout']   ?? ''),
+            (int)($ae['online_sec']       ?? 0),
+            (int)($ae['pause_count']      ?? 0),
+            (int)($ae['total_pause_sec']  ?? 0),
         ];
     }
     streamXlsx($headers, $rows, "kpi_{$from}_to_{$to}.xlsx");

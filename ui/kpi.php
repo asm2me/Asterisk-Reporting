@@ -14,6 +14,10 @@ use function fmtTime;
 /** @var int $totalMissed */
 /** @var int $totalBusy */
 /** @var int $totalBillsec */
+/** @var array $agentEvents */
+/** @var int $totalPauseCount */
+/** @var int $totalPauseSec */
+/** @var int $totalOnlineSec */
 ?>
 <!doctype html>
 <html lang="en">
@@ -56,7 +60,8 @@ use function fmtTime;
   .grid{display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:12px;}
   @media(min-width:520px){.grid{grid-template-columns:repeat(2, minmax(0,1fr));}}
   @media(min-width:900px){.grid{grid-template-columns:repeat(3, minmax(0,1fr));}}
-  @media(min-width:1100px){.grid{grid-template-columns:repeat(5, minmax(0,1fr));}}
+  @media(min-width:1100px){.grid{grid-template-columns:repeat(4, minmax(0,1fr));}}
+  @media(min-width:1400px){.grid{grid-template-columns:repeat(5, minmax(0,1fr));}}
 
   .filters{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:12px;}
   @media(min-width:520px){.filters{grid-template-columns:repeat(2, minmax(0,1fr));}}
@@ -135,6 +140,18 @@ use function fmtTime;
     <div class="card">
       <div class="k">Total Talk Time</div>
       <div class="v"><?= h(fmtTime($totalBillsec)) ?></div>
+    </div>
+    <div class="card">
+      <div class="k">Total Online Time</div>
+      <div class="v" style="color:var(--accent)"><?= h(fmtTime($totalOnlineSec)) ?></div>
+    </div>
+    <div class="card">
+      <div class="k">Total Pauses</div>
+      <div class="v" style="color:var(--warn)"><?= (int)$totalPauseCount ?></div>
+    </div>
+    <div class="card">
+      <div class="k">Total Pause Time</div>
+      <div class="v" style="color:var(--warn)"><?= h(fmtTime($totalPauseSec)) ?></div>
     </div>
   </div>
 
@@ -226,11 +243,16 @@ use function fmtTime;
           <th>Avg Wait Time</th>
           <th>Avg Talk Time</th>
           <th>Total Talk Time</th>
+          <th>First Login</th>
+          <th>Last Logout</th>
+          <th>Online Time</th>
+          <th>Pauses</th>
+          <th>Pause Time</th>
         </tr>
       </thead>
       <tbody>
         <?php if (empty($kpiData)): ?>
-          <tr><td colspan="11" style="color:var(--muted);padding:16px;text-align:center;">No data for this period.</td></tr>
+          <tr><td colspan="16" style="color:var(--muted);padding:16px;text-align:center;">No data for this period.</td></tr>
         <?php else: ?>
           <?php foreach ($kpiData as $ext):
             $totalCalls = (int)($ext['total_calls'] ?? 0);
@@ -247,6 +269,13 @@ use function fmtTime;
             $rateBadge = 'low';
             if ($answerRate >= 80) $rateBadge = 'high';
             elseif ($answerRate >= 60) $rateBadge = 'medium';
+
+            $ae = $agentEvents[$ext['extension']] ?? [];
+            $firstLogin  = $ae['first_login'] ?? '';
+            $lastLogout  = $ae['last_logout'] ?? '';
+            $onlineSec   = (int)($ae['online_sec'] ?? 0);
+            $pauseCount  = (int)($ae['pause_count'] ?? 0);
+            $pauseSec    = (int)($ae['total_pause_sec'] ?? 0);
           ?>
             <tr>
               <td data-label="Extension"><strong><?= h($ext['extension']) ?></strong></td>
@@ -262,6 +291,11 @@ use function fmtTime;
               <td data-label="Avg Wait Time"><span class="num"><?= (int)$avgWait ?></span> sec</td>
               <td data-label="Avg Talk Time"><span class="num"><?= (int)$avgTalk ?></span> sec</td>
               <td data-label="Total Talk Time"><?= h(fmtTime($totalBillsec)) ?></td>
+              <td data-label="First Login"><?= $firstLogin ? h(substr($firstLogin, 11, 8)) : '<span style="color:var(--muted)">—</span>' ?></td>
+              <td data-label="Last Logout"><?= $lastLogout ? h(substr($lastLogout, 11, 8)) : '<span style="color:var(--muted)">—</span>' ?></td>
+              <td data-label="Online Time" style="color:var(--accent)"><?= $onlineSec > 0 ? h(fmtTime($onlineSec)) : '<span style="color:var(--muted)">—</span>' ?></td>
+              <td data-label="Pauses"><span class="num" style="color:var(--warn)"><?= $pauseCount ?></span></td>
+              <td data-label="Pause Time" style="color:var(--warn)"><?= $pauseSec > 0 ? h(fmtTime($pauseSec)) : '<span style="color:var(--muted)">—</span>' ?></td>
             </tr>
           <?php endforeach; ?>
         <?php endif; ?>

@@ -63,8 +63,11 @@ $availableExtensions = fetchAvailableExtensions($CONFIG, $pdo, $me, $from, $to);
 /* Fetch Extension KPIs */
 $kpiData = fetchExtensionKPIs($CONFIG, $pdo, $me, $filters);
 
+/* Fetch Agent Event KPIs (login/logout/pause from agent_event table) */
+$agentEvents = fetchAgentEventKPIs($pdo, $me, $from, $to);
+
 if ($format === 'excel') {
-    streamExcelKpis($kpiData, $from, $to);
+    streamExcelKpis($kpiData, $agentEvents, $from, $to);
     exit;
 }
 
@@ -75,6 +78,9 @@ $totalMissed = 0;
 $totalAbandoned = 0;
 $totalBusy = 0;
 $totalBillsec = 0;
+$totalPauseCount = 0;
+$totalPauseSec = 0;
+$totalOnlineSec = 0;
 
 foreach ($kpiData as $ext) {
     $totalCalls += (int)($ext['total_calls'] ?? 0);
@@ -83,6 +89,10 @@ foreach ($kpiData as $ext) {
     $totalAbandoned += (int)($ext['abandoned'] ?? 0);
     $totalBusy += (int)($ext['busy'] ?? 0);
     $totalBillsec += (int)($ext['total_billsec'] ?? 0);
+    $ae = $agentEvents[$ext['extension']] ?? [];
+    $totalPauseCount += (int)($ae['pause_count'] ?? 0);
+    $totalPauseSec += (int)($ae['total_pause_sec'] ?? 0);
+    $totalOnlineSec += (int)($ae['online_sec'] ?? 0);
 }
 
 require __DIR__ . '/ui/kpi.php';

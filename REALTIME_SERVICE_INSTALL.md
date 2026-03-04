@@ -224,6 +224,88 @@ sudo chown asterisk:asterisk /var/www/html/supervisor2/data
 sudo chmod 755 /var/www/html/supervisor2/data
 ```
 
+## Upgrading — Agent Event Tracking
+
+The realtime service now tracks agent events (login/logout, pause/unpause, FOP2 breaks) in the `agent_event` table in `asteriskcdrdb`. This table is the source for Extension KPI reports.
+
+### 1. Install New Dependency
+
+```bash
+pip3 install aiomysql
+```
+
+### 2. Update Files
+
+Copy the updated files to your installation directory:
+```bash
+cp asterisk-realtime-websocket.py /var/www/html/supervisor2/
+cp config.json /var/www/html/supervisor2/
+```
+
+### 3. Verify Log File Access
+
+The service now reads Asterisk log files. Ensure the service user has read access:
+```bash
+# Queue log (for pause/unpause tracking)
+ls -la /var/log/asterisk/queue_log
+
+# Full log (for startup registration history backfill)
+ls -la /var/log/asterisk/full
+```
+
+If needed, add the service user to the asterisk group:
+```bash
+sudo usermod -aG asterisk $(whoami)
+```
+
+### 4. Optional Configuration
+
+You can customize log file paths in `config.json` under the `asterisk` key:
+```json
+{
+  "asterisk": {
+    "queueLogPath": "/var/log/asterisk/queue_log",
+    "fullLogPath": "/var/log/asterisk/full"
+  }
+}
+```
+
+### 5. Restart the Service
+
+```bash
+sudo systemctl restart asterisk-realtime-report.service
+```
+
+### 6. Verify
+
+Check the service logs for successful initialization:
+```bash
+sudo journalctl -u asterisk-realtime-report.service -n 30
+```
+
+You should see:
+```
+✓ Async DB pool created (localhost:3306/asteriskcdrdb)
+✓ agent_event table ready
+✓ [FullLog] Inserted N historical events from full log
+✓ Watching queue_log: /var/log/asterisk/queue_log
+✓ AMI event listener connected — watching FOP2ASTDB + PeerStatus + ContactStatus
+```
+
+Verify data is being recorded:
+```sql
+SELECT * FROM asteriskcdrdb.agent_event ORDER BY event_time DESC LIMIT 20;
+```
+
+### What Gets Tracked
+
+| Event | Source | Trigger |
+|-------|--------|---------|
+| LOGIN | ami / full_log | Extension registers (PeerStatus/ContactStatus) |
+| LOGOUT | ami / full_log | Extension unregisters |
+| PAUSE | queue_log / fop2 | Agent paused in queue or FOP2 break started |
+| UNPAUSE | queue_log / fop2 | Agent unpaused or FOP2 break ended |
+
 ## Uninstallation
 
 To remove the service:
