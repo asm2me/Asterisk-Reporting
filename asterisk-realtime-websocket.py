@@ -712,17 +712,19 @@ async def ensure_agent_event_table():
 async def insert_agent_event(extension: str, event_type: str, event_time=None,
                               queue: str = None, reason: str = None,
                               source: str = 'ami', extra: str = None):
-    """Insert a row into agent_event table (with 5-second dedup)."""
+    """Insert a row into agent_event table.
+    Live sources (ami, fop2) get 5-second dedup; backfill sources skip dedup."""
     global db_pool, _last_agent_event
     if db_pool is None:
         return
-    # Dedup: skip if same (extension, event_type) within 5 seconds
-    now = time.time()
-    dedup_key = f"{extension}:{event_type}"
-    last = _last_agent_event.get(dedup_key, 0)
-    if now - last < 5:
-        return
-    _last_agent_event[dedup_key] = now
+    # Dedup only for live AMI/FOP2 events (not for log backfill)
+    if source in ('ami', 'fop2'):
+        now = time.time()
+        dedup_key = f"{extension}:{event_type}"
+        last = _last_agent_event.get(dedup_key, 0)
+        if now - last < 5:
+            return
+        _last_agent_event[dedup_key] = now
 
     if event_time is None:
         event_time = datetime.now()
@@ -1194,12 +1196,60 @@ async def ami_monitor_loop():
 
 # ── Queue Log Watcher ───────────────────────────────────────────────
 
+async def parse_queue_log_history():
+    """One-shot parse of existing queue_log to backfill PAUSE/UNPAUSE events.
+    Only runs if agent_event has no queue_log data yet."""
+    if db_pool is None:
+        return
+
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT COUNT(*) FROM agent_event WHERE source='queue_log'"
+                )
+                row = await cur.fetchone()
+                if row and row[0] > 0:
+                    print(f"[QueueLog] Already have {row[0]} queue_log events, skipping backfill")
+                    return
+    except Exception:
+        pass
+
+    print(f"[QueueLog] Backfilling from {QUEUE_LOG_PATH}...")
+    inserted = 0
+    lines_read = 0
+    try:
+        with open(QUEUE_LOG_PATH, 'r') as f:
+            for line in f:
+                lines_read += 1
+                if lines_read % 50000 == 0:
+                    print(f"[QueueLog] Processing... {lines_read} lines read, {inserted} events found")
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split('|')
+                if len(parts) < 5:
+                    continue
+                event = parts[4].strip().upper()
+                if event in ('PAUSE', 'UNPAUSE', 'PAUSEALL', 'UNPAUSEALL'):
+                    await process_queue_log_line(line)
+                    inserted += 1
+        print(f"✓ [QueueLog] Backfill done — {lines_read} lines read, {inserted} pause events inserted")
+    except FileNotFoundError:
+        print(f"⚠ {QUEUE_LOG_PATH} not found, skipping backfill")
+    except Exception as e:
+        print(f"⚠ QueueLog backfill error: {e}")
+
+
 async def queue_log_watcher():
     """Tail /var/log/asterisk/queue_log for PAUSE/UNPAUSE events."""
+    # First: backfill existing entries if table is empty
+    await parse_queue_log_history()
+
     while True:
         try:
             with open(QUEUE_LOG_PATH, 'r') as f:
-                # Seek to end — only process new events
+                # Seek to end — only process new events going forward
                 f.seek(0, 2)
                 current_inode = os.fstat(f.fileno()).st_ino
                 print(f"✓ Watching queue_log: {QUEUE_LOG_PATH}")
@@ -1281,30 +1331,41 @@ async def process_queue_log_line(line: str):
 
 # ── Full Log Parser (startup backfill) ──────────────────────────────
 
+async def is_agent_event_empty() -> bool:
+    """Check if agent_event table has any data at all."""
+    if db_pool is None:
+        return True
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT COUNT(*) FROM agent_event LIMIT 1")
+                row = await cur.fetchone()
+                return row is None or row[0] == 0
+    except Exception:
+        return True
+
+
 async def parse_full_log_history():
-    """Parse /var/log/asterisk/full once at startup to backfill today's
-    login/logout events into agent_event. Idempotent — skips if already done."""
+    """Parse /var/log/asterisk/full at startup to backfill ALL
+    login/logout events into agent_event. Idempotent — skips if data exists."""
     if db_pool is None:
         return
 
-    today_str = datetime.now().strftime('%Y-%m-%d')
-
-    # Check if we already have full_log data for today
+    # Check if we already have full_log data
     try:
         async with db_pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT COUNT(*) FROM agent_event WHERE source='full_log' AND event_time >= %s",
-                    (today_str,)
+                    "SELECT COUNT(*) FROM agent_event WHERE source='full_log'"
                 )
                 row = await cur.fetchone()
                 if row and row[0] > 0:
-                    print(f"[FullLog] Already have {row[0]} full_log events for today, skipping")
+                    print(f"[FullLog] Already have {row[0]} full_log events, skipping parse")
                     return
     except Exception:
         pass
 
-    print(f"[FullLog] Parsing {FULL_LOG_PATH} for today's registration history...")
+    print(f"[FullLog] Parsing {FULL_LOG_PATH} for ALL registration history...")
 
     # Asterisk full log format: [YYYY-MM-DD HH:MM:SS] LEVEL[pid] module: message
     re_timestamp = re.compile(r'^\[(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\]')
@@ -1340,15 +1401,18 @@ async def parse_full_log_history():
     )
 
     inserted = 0
+    lines_read = 0
     try:
         with open(FULL_LOG_PATH, 'r', errors='replace') as f:
             for raw_line in f:
+                lines_read += 1
+                if lines_read % 50000 == 0:
+                    print(f"[FullLog] Processing... {lines_read} lines read, {inserted} events found")
+
                 ts_match = re_timestamp.match(raw_line)
                 if not ts_match:
                     continue
                 log_date = ts_match.group(1)
-                if log_date != today_str:
-                    continue
                 log_time = ts_match.group(2)
 
                 try:
@@ -1418,7 +1482,7 @@ async def parse_full_log_history():
                                               extra=raw_line.strip()[:255])
                     inserted += 1
 
-        print(f"✓ [FullLog] Inserted {inserted} historical events from full log")
+        print(f"✓ [FullLog] Done — {lines_read} lines read, {inserted} events inserted")
 
     except FileNotFoundError:
         print(f"⚠ {FULL_LOG_PATH} not found, skipping historical parse")
