@@ -1242,13 +1242,18 @@ async def process_queue_log_line(line: str):
     queue_name    = parts[2]
     agent         = parts[3]
     event         = parts[4].strip().upper()
-    reason        = parts[6].strip() if len(parts) > 6 else None
+    # Reason is in data1 (index 5) for PAUSE/UNPAUSE
+    reason        = parts[5].strip() if len(parts) > 5 and parts[5].strip() else None
 
     if event not in ('PAUSE', 'UNPAUSE', 'PAUSEALL', 'UNPAUSEALL'):
         return
 
     # Extract extension from agent field: Agent/101, PJSIP/101, SIP/101, Local/101@...
+    # Also handle bare number (e.g. "110")
     ext_match = re.search(r'(?:Agent|PJSIP|SIP|Local)/(\d+)', agent, re.IGNORECASE)
+    if not ext_match:
+        # Try bare extension number
+        ext_match = re.match(r'^(\d+)$', agent.strip())
     if not ext_match:
         return
     extension = ext_match.group(1)
@@ -1303,12 +1308,34 @@ async def parse_full_log_history():
 
     # Asterisk full log format: [YYYY-MM-DD HH:MM:SS] LEVEL[pid] module: message
     re_timestamp = re.compile(r'^\[(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\]')
-    re_peer_status = re.compile(
-        r"Peer\s+'(?:SIP|PJSIP)/(\d+)'\s+is\s+now\s+(Reachable|Unreachable|Registered|Unregistered)",
+
+    # "Endpoint 1234 is now Reachable" / "Endpoint 1234 is now Unreachable"
+    re_endpoint_status = re.compile(
+        r"Endpoint\s+(\d+)\s+is\s+now\s+(Reachable|Unreachable)",
         re.IGNORECASE
     )
-    re_contact_status = re.compile(
-        r"Contact\s+(\d+)/\S+\s+is\s+now\s+(Reachable|Unreachable|Created|Removed)",
+    # "Contact 1234/sip:... is now Reachable." / "Contact 1234/sip:... has been deleted"
+    re_contact_reachable = re.compile(
+        r"Contact\s+(\d+)/\S+\s+is\s+now\s+(Reachable|Unreachable)",
+        re.IGNORECASE
+    )
+    re_contact_deleted = re.compile(
+        r"Contact\s+(\d+)/\S+\s+has\s+been\s+deleted",
+        re.IGNORECASE
+    )
+    # "Added contact ... to AOR '1234'" (login)
+    re_contact_added = re.compile(
+        r"Added\s+contact\s+.+?\s+to\s+AOR\s+'(\d+)'",
+        re.IGNORECASE
+    )
+    # "Removed contact ... from AOR '1234'" (logout)
+    re_contact_removed = re.compile(
+        r"Removed\s+contact\s+.+?\s+from\s+AOR\s+'(\d+)'",
+        re.IGNORECASE
+    )
+    # Legacy SIP: "Peer 'SIP/1234' is now Reachable"
+    re_peer_status = re.compile(
+        r"Peer\s+'(?:SIP|PJSIP)/(\d+)'\s+is\s+now\s+(Reachable|Unreachable|Registered|Unregistered)",
         re.IGNORECASE
     )
 
@@ -1329,22 +1356,63 @@ async def parse_full_log_history():
                 except ValueError:
                     continue
 
-                # PeerStatus (chan_sip)
-                m = re_peer_status.search(raw_line)
+                # Endpoint status (PJSIP): "Endpoint 1234 is now Reachable/Unreachable"
+                m = re_endpoint_status.search(raw_line)
                 if m:
                     ext, status = m.group(1), m.group(2)
-                    event_type = 'LOGIN' if status in ('Reachable', 'Registered') else 'LOGOUT'
+                    event_type = 'LOGIN' if status == 'Reachable' else 'LOGOUT'
                     await insert_agent_event(ext, event_type, event_time=event_time,
                                               source='full_log', reason=status,
                                               extra=raw_line.strip()[:255])
                     inserted += 1
                     continue
 
-                # ContactStatus (PJSIP)
-                m = re_contact_status.search(raw_line)
+                # Contact reachable: "Contact 1234/sip:... is now Reachable"
+                m = re_contact_reachable.search(raw_line)
                 if m:
                     ext, status = m.group(1), m.group(2)
-                    event_type = 'LOGIN' if status in ('Reachable', 'Created') else 'LOGOUT'
+                    event_type = 'LOGIN' if status == 'Reachable' else 'LOGOUT'
+                    await insert_agent_event(ext, event_type, event_time=event_time,
+                                              source='full_log', reason=status,
+                                              extra=raw_line.strip()[:255])
+                    inserted += 1
+                    continue
+
+                # Contact deleted: "Contact 1234/sip:... has been deleted"
+                m = re_contact_deleted.search(raw_line)
+                if m:
+                    ext = m.group(1)
+                    await insert_agent_event(ext, 'LOGOUT', event_time=event_time,
+                                              source='full_log', reason='Deleted',
+                                              extra=raw_line.strip()[:255])
+                    inserted += 1
+                    continue
+
+                # Added contact to AOR: "Added contact ... to AOR '1234'"
+                m = re_contact_added.search(raw_line)
+                if m:
+                    ext = m.group(1)
+                    await insert_agent_event(ext, 'LOGIN', event_time=event_time,
+                                              source='full_log', reason='ContactAdded',
+                                              extra=raw_line.strip()[:255])
+                    inserted += 1
+                    continue
+
+                # Removed contact from AOR: "Removed contact ... from AOR '1234'"
+                m = re_contact_removed.search(raw_line)
+                if m:
+                    ext = m.group(1)
+                    await insert_agent_event(ext, 'LOGOUT', event_time=event_time,
+                                              source='full_log', reason='ContactRemoved',
+                                              extra=raw_line.strip()[:255])
+                    inserted += 1
+                    continue
+
+                # Legacy SIP: "Peer 'SIP/1234' is now Reachable"
+                m = re_peer_status.search(raw_line)
+                if m:
+                    ext, status = m.group(1), m.group(2)
+                    event_type = 'LOGIN' if status in ('Reachable', 'Registered') else 'LOGOUT'
                     await insert_agent_event(ext, event_type, event_time=event_time,
                                               source='full_log', reason=status,
                                               extra=raw_line.strip()[:255])
@@ -1421,11 +1489,11 @@ async def ami_event_listener():
                                 await insert_agent_event(ext, 'UNPAUSE', source='fop2',
                                                           reason=subtype or value)
 
-                    # ── PeerStatus (chan_sip) ──
+                    # ── PeerStatus (SIP/PJSIP) ──
                     elif evt == 'PeerStatus':
-                        peer   = fields.get('Peer', '')         # e.g. "SIP/101"
+                        peer   = fields.get('Peer', '')         # e.g. "SIP/101" or "PJSIP/1234"
                         status = fields.get('PeerStatus', '')   # Registered/Unregistered/Reachable/Unreachable
-                        ext_m  = re.search(r'(?:SIP)/(\d+)', peer)
+                        ext_m  = re.search(r'(?:PJSIP|SIP)/(\d+)', peer)
                         if ext_m:
                             ext = ext_m.group(1)
                             if status in ('Registered', 'Reachable'):
