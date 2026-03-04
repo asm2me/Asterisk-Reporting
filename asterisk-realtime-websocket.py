@@ -27,6 +27,16 @@ except ImportError:
     print("Warning: pymysql not available. Database stats disabled.")
     MYSQL_AVAILABLE = False
 
+try:
+    import aiomysql
+    AIOMYSQL_AVAILABLE = True
+except ImportError:
+    print("Warning: aiomysql not available. Agent event logging disabled.")
+    print("Install with: pip3 install aiomysql")
+    AIOMYSQL_AVAILABLE = False
+
+import os
+
 # Load configuration
 CONFIG_FILE = '/var/www/html/supervisor2/config.json'
 try:
@@ -45,6 +55,8 @@ AMI_SECRET = CONFIG.get('asterisk', {}).get('ami', {}).get('secret', 'HfsobKSEPN
 WS_HOST = CONFIG.get('realtime', {}).get('websocketHost', '0.0.0.0')
 WS_PORT = CONFIG.get('realtime', {}).get('websocketPort', 8765)
 DB_CONFIG_FILE = CONFIG.get('realtime', {}).get('dbConfigFile', '/etc/amportal.conf')
+QUEUE_LOG_PATH = CONFIG.get('asterisk', {}).get('queueLogPath', '/var/log/asterisk/queue_log')
+FULL_LOG_PATH  = CONFIG.get('asterisk', {}).get('fullLogPath', '/var/log/asterisk/full')
 
 # Gateway configuration
 GATEWAYS = []
@@ -66,6 +78,8 @@ DB_RELOAD_INTERVAL = 30
 presence_states: Dict[str, Dict[str, str]] = {}   # updated by event listener
 presence_prev:   Dict[str, Dict[str, str]] = {}   # snapshot for transition detection
 break_history:   Dict[str, list]           = {}
+db_pool = None                                    # aiomysql async pool
+_last_agent_event: Dict[str, float] = {}          # dedup: "ext:type" -> timestamp
 
 
 class AsteriskAMI:
@@ -626,6 +640,105 @@ def load_db_stats():
         print(f"⚠ Database stats load failed: {e}")
 
 
+# ── Agent Event DB (async) ──────────────────────────────────────────
+
+def get_db_config() -> dict:
+    """Parse DB credentials from FreePBX/amportal config file."""
+    db_config = {'host': 'localhost', 'user': 'root', 'password': '', 'db': 'asteriskcdrdb', 'port': 3306}
+    try:
+        with open(DB_CONFIG_FILE, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if '=' in line and not line.startswith('#'):
+                    key, value = line.split('=', 1)
+                    key, value = key.strip(), value.strip().strip('"').strip("'")
+                    if key == 'AMPDBHOST':   db_config['host'] = value
+                    elif key == 'AMPDBUSER': db_config['user'] = value
+                    elif key == 'AMPDBPASS': db_config['password'] = value
+                    elif key == 'AMPDBPORT': db_config['port'] = int(value) if value.isdigit() else 3306
+    except Exception:
+        pass
+    return db_config
+
+
+async def init_db_pool():
+    """Create aiomysql connection pool for agent_event writes."""
+    global db_pool
+    if not AIOMYSQL_AVAILABLE:
+        print("⚠ aiomysql not available — agent event logging disabled")
+        return
+    cfg = get_db_config()
+    try:
+        db_pool = await aiomysql.create_pool(
+            host=cfg['host'], port=cfg['port'],
+            user=cfg['user'], password=cfg['password'],
+            db=cfg['db'], minsize=1, maxsize=5,
+            autocommit=True
+        )
+        print(f"✓ Async DB pool created ({cfg['host']}:{cfg['port']}/{cfg['db']})")
+    except Exception as e:
+        print(f"⚠ Failed to create async DB pool: {e}")
+
+
+async def ensure_agent_event_table():
+    """Create the agent_event table if it doesn't exist."""
+    if db_pool is None:
+        return
+    create_sql = """
+    CREATE TABLE IF NOT EXISTS `agent_event` (
+        `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        `event_time` DATETIME        NOT NULL,
+        `extension`  VARCHAR(20)     NOT NULL,
+        `event_type` ENUM('LOGIN','LOGOUT','PAUSE','UNPAUSE') NOT NULL,
+        `queue`      VARCHAR(64)     DEFAULT NULL,
+        `reason`     VARCHAR(128)    DEFAULT NULL,
+        `source`     ENUM('queue_log','ami','full_log','fop2') NOT NULL,
+        `extra`      VARCHAR(255)    DEFAULT NULL,
+        PRIMARY KEY (`id`),
+        INDEX `idx_ext_time`   (`extension`, `event_time`),
+        INDEX `idx_type_time`  (`event_type`, `event_time`),
+        INDEX `idx_event_time` (`event_time`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(create_sql)
+        print("✓ agent_event table ready")
+    except Exception as e:
+        print(f"⚠ ensure_agent_event_table error: {e}")
+
+
+async def insert_agent_event(extension: str, event_type: str, event_time=None,
+                              queue: str = None, reason: str = None,
+                              source: str = 'ami', extra: str = None):
+    """Insert a row into agent_event table (with 5-second dedup)."""
+    global db_pool, _last_agent_event
+    if db_pool is None:
+        return
+    # Dedup: skip if same (extension, event_type) within 5 seconds
+    now = time.time()
+    dedup_key = f"{extension}:{event_type}"
+    last = _last_agent_event.get(dedup_key, 0)
+    if now - last < 5:
+        return
+    _last_agent_event[dedup_key] = now
+
+    if event_time is None:
+        event_time = datetime.now()
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO agent_event (event_time, extension, event_type, queue, reason, source, extra) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (event_time, extension, event_type, queue, reason, source,
+                     extra[:255] if extra else None)
+                )
+    except Exception as e:
+        print(f"⚠ insert_agent_event error: {e}")
+
+
 _FOP2_DND_VALUES  = {'dnd', 'do not disturb'}
 _FOP2_AWAY_VALUES = {'break', 'lunch', 'meeting', 'training', 'away', 'xa', 'out', 'unavailable'}
 
@@ -1079,8 +1192,174 @@ async def ami_monitor_loop():
             await asyncio.sleep(5)
 
 
+# ── Queue Log Watcher ───────────────────────────────────────────────
+
+async def queue_log_watcher():
+    """Tail /var/log/asterisk/queue_log for PAUSE/UNPAUSE events."""
+    while True:
+        try:
+            with open(QUEUE_LOG_PATH, 'r') as f:
+                # Seek to end — only process new events
+                f.seek(0, 2)
+                current_inode = os.fstat(f.fileno()).st_ino
+                print(f"✓ Watching queue_log: {QUEUE_LOG_PATH}")
+
+                while True:
+                    line = f.readline()
+                    if not line:
+                        await asyncio.sleep(1)
+                        # Check for log rotation (inode change)
+                        try:
+                            if os.stat(QUEUE_LOG_PATH).st_ino != current_inode:
+                                print("[QueueLog] File rotated, reopening")
+                                break
+                        except Exception:
+                            pass
+                        continue
+
+                    line = line.strip()
+                    if line:
+                        await process_queue_log_line(line)
+
+        except FileNotFoundError:
+            print(f"⚠ {QUEUE_LOG_PATH} not found, retrying in 30s")
+            await asyncio.sleep(30)
+        except Exception as e:
+            print(f"⚠ QueueLog watcher error: {e}")
+            await asyncio.sleep(5)
+
+
+async def process_queue_log_line(line: str):
+    """Parse a queue_log line and insert PAUSE/UNPAUSE events.
+
+    Format: timestamp|uniqueid|queuename|agent|event|data1|data2|data3
+    """
+    parts = line.split('|')
+    if len(parts) < 5:
+        return
+
+    timestamp_str = parts[0]
+    queue_name    = parts[2]
+    agent         = parts[3]
+    event         = parts[4].strip().upper()
+    reason        = parts[6].strip() if len(parts) > 6 else None
+
+    if event not in ('PAUSE', 'UNPAUSE', 'PAUSEALL', 'UNPAUSEALL'):
+        return
+
+    # Extract extension from agent field: Agent/101, PJSIP/101, SIP/101, Local/101@...
+    ext_match = re.search(r'(?:Agent|PJSIP|SIP|Local)/(\d+)', agent, re.IGNORECASE)
+    if not ext_match:
+        return
+    extension = ext_match.group(1)
+
+    # Parse epoch timestamp
+    try:
+        event_time = datetime.fromtimestamp(int(timestamp_str))
+    except (ValueError, OSError):
+        event_time = datetime.now()
+
+    event_type = 'PAUSE' if event in ('PAUSE', 'PAUSEALL') else 'UNPAUSE'
+    queue = None if event.endswith('ALL') or queue_name in ('NONE', '') else queue_name
+
+    await insert_agent_event(
+        extension=extension,
+        event_type=event_type,
+        event_time=event_time,
+        queue=queue,
+        reason=reason if reason else None,
+        source='queue_log',
+        extra=line[:255]
+    )
+    print(f"[QueueLog] {event_type} ext={extension} queue={queue} reason={reason}")
+
+
+# ── Full Log Parser (startup backfill) ──────────────────────────────
+
+async def parse_full_log_history():
+    """Parse /var/log/asterisk/full once at startup to backfill today's
+    login/logout events into agent_event. Idempotent — skips if already done."""
+    if db_pool is None:
+        return
+
+    today_str = datetime.now().strftime('%Y-%m-%d')
+
+    # Check if we already have full_log data for today
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT COUNT(*) FROM agent_event WHERE source='full_log' AND event_time >= %s",
+                    (today_str,)
+                )
+                row = await cur.fetchone()
+                if row and row[0] > 0:
+                    print(f"[FullLog] Already have {row[0]} full_log events for today, skipping")
+                    return
+    except Exception:
+        pass
+
+    print(f"[FullLog] Parsing {FULL_LOG_PATH} for today's registration history...")
+
+    # Asterisk full log format: [YYYY-MM-DD HH:MM:SS] LEVEL[pid] module: message
+    re_timestamp = re.compile(r'^\[(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\]')
+    re_peer_status = re.compile(
+        r"Peer\s+'(?:SIP|PJSIP)/(\d+)'\s+is\s+now\s+(Reachable|Unreachable|Registered|Unregistered)",
+        re.IGNORECASE
+    )
+    re_contact_status = re.compile(
+        r"Contact\s+(\d+)/\S+\s+is\s+now\s+(Reachable|Unreachable|Created|Removed)",
+        re.IGNORECASE
+    )
+
+    inserted = 0
+    try:
+        with open(FULL_LOG_PATH, 'r', errors='replace') as f:
+            for raw_line in f:
+                ts_match = re_timestamp.match(raw_line)
+                if not ts_match:
+                    continue
+                log_date = ts_match.group(1)
+                if log_date != today_str:
+                    continue
+                log_time = ts_match.group(2)
+
+                try:
+                    event_time = datetime.strptime(f"{log_date} {log_time}", '%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    continue
+
+                # PeerStatus (chan_sip)
+                m = re_peer_status.search(raw_line)
+                if m:
+                    ext, status = m.group(1), m.group(2)
+                    event_type = 'LOGIN' if status in ('Reachable', 'Registered') else 'LOGOUT'
+                    await insert_agent_event(ext, event_type, event_time=event_time,
+                                              source='full_log', reason=status,
+                                              extra=raw_line.strip()[:255])
+                    inserted += 1
+                    continue
+
+                # ContactStatus (PJSIP)
+                m = re_contact_status.search(raw_line)
+                if m:
+                    ext, status = m.group(1), m.group(2)
+                    event_type = 'LOGIN' if status in ('Reachable', 'Created') else 'LOGOUT'
+                    await insert_agent_event(ext, event_type, event_time=event_time,
+                                              source='full_log', reason=status,
+                                              extra=raw_line.strip()[:255])
+                    inserted += 1
+
+        print(f"✓ [FullLog] Inserted {inserted} historical events from full log")
+
+    except FileNotFoundError:
+        print(f"⚠ {FULL_LOG_PATH} not found, skipping historical parse")
+    except Exception as e:
+        print(f"⚠ FullLog parse error: {e}")
+
+
 async def ami_event_listener():
-    """Dedicated AMI connection — watches UserEvent:FOP2ASTDB for real-time presence."""
+    """Dedicated AMI connection — watches FOP2ASTDB, PeerStatus, ContactStatus."""
     while True:
         writer = None
         try:
@@ -1089,7 +1368,7 @@ async def ami_event_listener():
 
             login = (
                 f"Action: Login\r\nUsername: {AMI_USER}\r\nSecret: {AMI_SECRET}\r\n"
-                f"Events: user\r\n\r\n"
+                f"Events: system,user\r\n\r\n"
             )
             writer.write(login.encode())
             await writer.drain()
@@ -1103,7 +1382,7 @@ async def ami_event_listener():
                 await asyncio.sleep(10)
                 continue
 
-            print("✓ AMI event listener connected — watching FOP2ASTDB")
+            print("✓ AMI event listener connected — watching FOP2ASTDB + PeerStatus + ContactStatus")
             buf = b""
 
             while True:
@@ -1124,13 +1403,58 @@ async def ami_event_listener():
                             k, _, v = line.partition(':')
                             fields[k.strip()] = v.strip()
 
-                    if (fields.get('Event') == 'UserEvent'
-                            and fields.get('UserEvent') == 'FOP2ASTDB'):
+                    evt = fields.get('Event', '')
+
+                    # ── FOP2 Presence ──
+                    if evt == 'UserEvent' and fields.get('UserEvent') == 'FOP2ASTDB':
                         key   = fields.get('Key',   '')   # e.g. "PJSIP/102"
                         value = fields.get('Value', '')   # e.g. "Break"
                         ext   = re.sub(r'^(PJSIP|SIP)/', '', key, flags=re.IGNORECASE)
                         if ext.isdigit():
                             apply_fop2_event(ext, value)
+                            # Persist to agent_event
+                            new_state, subtype = fop2_value_to_state(value)
+                            if new_state in ('away', 'xa', 'dnd'):
+                                await insert_agent_event(ext, 'PAUSE', source='fop2',
+                                                          reason=subtype or value)
+                            else:
+                                await insert_agent_event(ext, 'UNPAUSE', source='fop2',
+                                                          reason=subtype or value)
+
+                    # ── PeerStatus (chan_sip) ──
+                    elif evt == 'PeerStatus':
+                        peer   = fields.get('Peer', '')         # e.g. "SIP/101"
+                        status = fields.get('PeerStatus', '')   # Registered/Unregistered/Reachable/Unreachable
+                        ext_m  = re.search(r'(?:SIP)/(\d+)', peer)
+                        if ext_m:
+                            ext = ext_m.group(1)
+                            if status in ('Registered', 'Reachable'):
+                                await insert_agent_event(ext, 'LOGIN', source='ami',
+                                                          reason=status,
+                                                          extra=f"PeerStatus:{peer}:{status}")
+                            elif status in ('Unregistered', 'Unreachable'):
+                                await insert_agent_event(ext, 'LOGOUT', source='ami',
+                                                          reason=status,
+                                                          extra=f"PeerStatus:{peer}:{status}")
+
+                    # ── ContactStatus (PJSIP) ──
+                    elif evt == 'ContactStatus':
+                        aor    = fields.get('AOR', '')            # e.g. "101"
+                        uri    = fields.get('URI', '')            # e.g. "sip:101@10.0.0.1"
+                        status = fields.get('ContactStatus', '')  # Reachable/Unreachable/Created/Removed
+                        ext = aor if aor.isdigit() else None
+                        if not ext:
+                            ext_m = re.search(r'(\d+)', uri)
+                            ext = ext_m.group(1) if ext_m else None
+                        if ext:
+                            if status in ('Reachable', 'Created'):
+                                await insert_agent_event(ext, 'LOGIN', source='ami',
+                                                          reason=status,
+                                                          extra=f"ContactStatus:{aor}:{status}")
+                            elif status in ('Unreachable', 'Removed'):
+                                await insert_agent_event(ext, 'LOGOUT', source='ami',
+                                                          reason=status,
+                                                          extra=f"ContactStatus:{aor}:{status}")
 
         except Exception as e:
             print(f"⚠ AMI event listener error: {e}")
@@ -1149,17 +1473,25 @@ async def main():
     print("Asterisk Realtime WebSocket Service")
     print("="*60)
 
-    # Load initial DB stats
+    # Load initial DB stats (sync pymysql)
     load_db_stats()
+
+    # Initialize async DB pool for agent_event table
+    await init_db_pool()
+    await ensure_agent_event_table()
+
+    # One-shot: backfill today's registration history from Asterisk full log
+    await parse_full_log_history()
 
     # Start WebSocket server
     print(f"\n🌐 Starting WebSocket server on ws://{WS_HOST}:{WS_PORT}")
 
     async with websockets.serve(handle_client, WS_HOST, WS_PORT):
-        # Run monitor loop and event listener concurrently
+        # Run monitor loop, event listener, and queue log watcher concurrently
         await asyncio.gather(
             ami_monitor_loop(),
             ami_event_listener(),
+            queue_log_watcher(),
         )
 
 

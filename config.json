@@ -20,7 +20,9 @@
     ],
     "recordings": {
       "baseDir": "/var/spool/asterisk/monitor"
-    }
+    },
+    "queueLogPath": "/var/log/asterisk/queue_log",
+    "fullLogPath": "/var/log/asterisk/full"
   },
   "realtime": {
     "updateInterval": 2,
