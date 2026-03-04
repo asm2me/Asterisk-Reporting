@@ -553,8 +553,8 @@ def load_db_stats():
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
         today = date.today().strftime('%Y-%m-%d')
-        # Double the % for SQL escaping when using parameterized queries
-        gateway_like = " OR ".join([f"channel LIKE '%%{gw}%%' OR dstchannel LIKE '%%{gw}%%'" for gw in GATEWAYS])
+        # Quadruple %: f-string resolves %% to %, then pymysql resolves %% to %
+        gateway_like = " OR ".join([f"channel LIKE '%%%%{gw}%%%%' OR dstchannel LIKE '%%%%{gw}%%%%'" for gw in GATEWAYS])
 
         query = f"""
         SELECT
@@ -1432,10 +1432,12 @@ async def ami_event_listener():
                                 await insert_agent_event(ext, 'LOGIN', source='ami',
                                                           reason=status,
                                                           extra=f"PeerStatus:{peer}:{status}")
+                                print(f"[AMI] LOGIN ext={ext} ({status})")
                             elif status in ('Unregistered', 'Unreachable'):
                                 await insert_agent_event(ext, 'LOGOUT', source='ami',
                                                           reason=status,
                                                           extra=f"PeerStatus:{peer}:{status}")
+                                print(f"[AMI] LOGOUT ext={ext} ({status})")
 
                     # ── ContactStatus (PJSIP) ──
                     elif evt == 'ContactStatus':
@@ -1451,10 +1453,12 @@ async def ami_event_listener():
                                 await insert_agent_event(ext, 'LOGIN', source='ami',
                                                           reason=status,
                                                           extra=f"ContactStatus:{aor}:{status}")
+                                print(f"[AMI] LOGIN ext={ext} ({status})")
                             elif status in ('Unreachable', 'Removed'):
                                 await insert_agent_event(ext, 'LOGOUT', source='ami',
                                                           reason=status,
                                                           extra=f"ContactStatus:{aor}:{status}")
+                                print(f"[AMI] LOGOUT ext={ext} ({status})")
 
         except Exception as e:
             print(f"⚠ AMI event listener error: {e}")
