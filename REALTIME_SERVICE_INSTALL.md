@@ -239,7 +239,9 @@ pip3 install aiomysql
 Copy the updated files to your installation directory:
 ```bash
 cp asterisk-realtime-websocket.py /var/www/html/supervisor2/
+cp process-agent-logs.py /var/www/html/supervisor2/
 cp config.json /var/www/html/supervisor2/
+chmod +x /var/www/html/supervisor2/process-agent-logs.py
 ```
 
 ### 3. Verify Log File Access
@@ -270,26 +272,65 @@ You can customize log file paths in `config.json` under the `asterisk` key:
 }
 ```
 
-### 5. Restart the Service
+### 5. Manual Log Processing (CLI)
+
+You can manually run the log processor to backfill agent events from the command line. This is the same command the service runs automatically on startup:
+
+```bash
+# Process logs (skips if data already exists)
+python3.6 /var/www/html/supervisor2/process-agent-logs.py
+
+# Force re-process even if data already exists
+python3.6 /var/www/html/supervisor2/process-agent-logs.py --force
+
+# Process only full log (LOGIN/LOGOUT events)
+python3.6 /var/www/html/supervisor2/process-agent-logs.py --full-only
+
+# Process only queue_log (PAUSE/UNPAUSE events)
+python3.6 /var/www/html/supervisor2/process-agent-logs.py --queue-only
+
+# Force re-process only queue_log
+python3.6 /var/www/html/supervisor2/process-agent-logs.py --force --queue-only
+```
+
+The processor reads the Asterisk full log and queue_log, extracts agent status events, and inserts them into the `agent_event` table without duplicates. Run it in the foreground to see progress logs in real time.
+
+### 6. Restart the Service
 
 ```bash
 sudo systemctl restart asterisk-realtime-report.service
 ```
 
-### 6. Verify
+### 7. Verify
 
 Check the service logs for successful initialization:
 ```bash
-sudo journalctl -u asterisk-realtime-report.service -n 30
+sudo journalctl -u asterisk-realtime-report.service -n 50
 ```
 
-You should see:
+You should see the log processor running first, then the websocket service starting:
 ```
-✓ Async DB pool created (localhost:3306/asteriskcdrdb)
-✓ agent_event table ready
-✓ [FullLog] Inserted N historical events from full log
+============================================================
+Asterisk Agent Log Processor
+============================================================
+Loaded configuration from /var/www/html/supervisor2/config.json
+DB pool created (localhost:3306/asteriskcdrdb)
+agent_event table ready
+[FullLog] Parsing /var/log/asterisk/full for registration history...
+[FullLog] Done - NNNNN lines read, NNN events inserted
+[QueueLog] Backfilling from /var/log/asterisk/queue_log...
+[QueueLog] Done - NNNNN lines read, NNN pause events inserted
+
+Log processing complete.
+✓ Log processing complete
 ✓ Watching queue_log: /var/log/asterisk/queue_log
 ✓ AMI event listener connected — watching FOP2ASTDB + PeerStatus + ContactStatus
+```
+
+On subsequent restarts, if data already exists, you will see:
+```
+[FullLog] Already have NNN full_log events, skipping (use --force to re-process)
+[QueueLog] Already have NNN queue_log events, skipping (use --force to re-process)
 ```
 
 Verify data is being recorded:

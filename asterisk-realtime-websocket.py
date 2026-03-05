@@ -7,6 +7,7 @@ Real-time call monitoring with WebSocket push updates
 import asyncio
 import json
 import re
+import sys
 import time
 import signal
 from datetime import datetime, date
@@ -36,6 +37,7 @@ except ImportError:
     AIOMYSQL_AVAILABLE = False
 
 import os
+import subprocess
 
 # Load configuration
 CONFIG_FILE = '/var/www/html/supervisor2/config.json'
@@ -1242,9 +1244,8 @@ async def parse_queue_log_history():
 
 
 async def queue_log_watcher():
-    """Tail /var/log/asterisk/queue_log for PAUSE/UNPAUSE events."""
-    # First: backfill existing entries if table is empty
-    await parse_queue_log_history()
+    """Tail /var/log/asterisk/queue_log for PAUSE/UNPAUSE events.
+    Note: Historical backfill is handled by process-agent-logs.py at startup."""
 
     while True:
         try:
@@ -1616,8 +1617,23 @@ async def main():
     await init_db_pool()
     await ensure_agent_event_table()
 
-    # One-shot: backfill today's registration history from Asterisk full log
-    await parse_full_log_history()
+    # One-shot: backfill historical logs (full log + queue_log) using shared processor
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    processor = os.path.join(script_dir, 'process-agent-logs.py')
+    print(f"\n▶ Running log processor: {processor}")
+    try:
+        result = subprocess.run(
+            [sys.executable, processor],
+            cwd=script_dir, timeout=300
+        )
+        if result.returncode == 0:
+            print("✓ Log processing complete")
+        else:
+            print(f"⚠ Log processor exited with code {result.returncode}")
+    except subprocess.TimeoutExpired:
+        print("⚠ Log processor timed out (300s)")
+    except Exception as e:
+        print(f"⚠ Log processor error: {e}")
 
     # Start WebSocket server
     print(f"\n🌐 Starting WebSocket server on ws://{WS_HOST}:{WS_PORT}")
