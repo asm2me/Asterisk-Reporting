@@ -38,6 +38,7 @@ $dst  = (string)$filters['dst'];
 $disp = (string)$filters['disposition'];
 $minDur = (string)$filters['mindur'];
 $ext    = (string)($filters['ext'] ?? '');
+$selectedExts = $ext !== '' ? array_filter(preg_split('/[,\s]+/', $ext), fn($e) => $e !== '') : [];
 $preset = (string)($filters['preset'] ?? '');
 $gateway = (string)($filters['gateway'] ?? '');
 ?>
@@ -145,6 +146,17 @@ $gateway = (string)($filters['gateway'] ?? '');
   .detail-label{font-size:11px;color:var(--muted);text-transform:uppercase;font-weight:600;}
   .detail-value{font-size:13px;color:var(--text);word-break:break-all;}
 
+  /* Multi-select extension dropdown */
+  .multiselect-wrap{position:relative;}
+  .multiselect-btn{width:100%;background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:10px;font-size:13px;outline:none;cursor:pointer;text-align:left;display:flex;justify-content:space-between;align-items:center;}
+  .multiselect-btn:hover{border-color:var(--accent);}
+  .multiselect-dropdown{display:none;position:absolute;top:100%;left:0;right:0;z-index:50;background:var(--card);border:1px solid var(--line);border-radius:12px;max-height:240px;overflow:auto;margin-top:4px;padding:6px 0;}
+  .multiselect-dropdown.open{display:block;}
+  .multiselect-dropdown label{display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:13px;margin:0;}
+  .multiselect-dropdown label:hover{background:rgba(255,255,255,.04);}
+  .multiselect-dropdown input[type="checkbox"]{accent-color:var(--accent);width:16px;height:16px;}
+  .ext-tag{display:inline-flex;padding:2px 6px;border-radius:4px;background:rgba(122,162,255,.15);font-size:11px;color:var(--accent);margin:1px 2px;}
+
   @media (max-width: 900px){
     table{min-width:0 !important;}
     thead{display:none;}
@@ -223,14 +235,20 @@ $gateway = (string)($filters['gateway'] ?? '');
         <div><label>Src (number OR channel)</label><input name="src" value="<?= h($src) ?>" placeholder="1001"></div>
         <div><label>Dst (number OR dstchannel)</label><input name="dst" value="<?= h($dst) ?>" placeholder="2000"></div>
 
-        <div>
+        <div class="multiselect-wrap" id="extMultiWrap">
           <label>Extension</label>
-          <select name="ext">
-            <option value="">All Extensions</option>
+          <div class="multiselect-btn" id="extMultiBtn" onclick="toggleExtDropdown()">
+            <span id="extMultiLabel"><?= empty($selectedExts) ? 'All Extensions' : implode(', ', array_map(fn($e) => h($e), $selectedExts)) ?></span>
+            <span style="font-size:10px;color:var(--muted);">▼</span>
+          </div>
+          <div class="multiselect-dropdown" id="extMultiDrop">
             <?php foreach ($availableExtensions as $e): ?>
-              <option value="<?= h($e) ?>" <?= ($ext === $e) ? 'selected' : '' ?>><?= h($e) ?></option>
+              <label>
+                <input type="checkbox" name="ext[]" value="<?= h($e) ?>" <?= in_array($e, $selectedExts) ? 'checked' : '' ?> onchange="updateExtLabel()">
+                <?= h($e) ?>
+              </label>
             <?php endforeach; ?>
-          </select>
+          </div>
         </div>
 
         <div>
@@ -634,6 +652,28 @@ function toggleDetails(rowId) {
     toggle.classList.remove('expanded');
   }
 }
+
+function toggleExtDropdown() {
+  document.getElementById('extMultiDrop').classList.toggle('open');
+}
+
+function updateExtLabel() {
+  const checks = document.querySelectorAll('#extMultiDrop input[type="checkbox"]:checked');
+  const label = document.getElementById('extMultiLabel');
+  if (checks.length === 0) {
+    label.textContent = 'All Extensions';
+  } else {
+    const vals = Array.from(checks).map(c => c.value);
+    label.innerHTML = vals.map(v => '<span class="ext-tag">' + v + '</span>').join(' ');
+  }
+}
+
+document.addEventListener('click', function(e) {
+  const wrap = document.getElementById('extMultiWrap');
+  if (wrap && !wrap.contains(e.target)) {
+    document.getElementById('extMultiDrop').classList.remove('open');
+  }
+});
 </script>
 
 </body>

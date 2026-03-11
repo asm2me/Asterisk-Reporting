@@ -63,7 +63,16 @@ $availableGateways = $CONFIG['gateways'] ?? [];
 $q      = trim((string)getParam('q', ''));
 $src    = trim((string)getParam('src', ''));
 $dst    = trim((string)getParam('dst', ''));
-$ext    = trim((string)getParam('ext', ''));
+// Support multi-select: ext[] array or ext comma-separated string
+$extParam = $_GET['ext'] ?? '';
+if (is_array($extParam)) {
+    $ext = implode(',', array_filter(array_map('trim', $extParam), fn($e) => preg_match('/^[0-9]+$/', $e)));
+} else {
+    $ext = trim((string)$extParam);
+    if ($ext !== '' && !preg_match('/^[0-9,\s]+$/', $ext)) $ext = '';
+}
+$selectedExts = $ext !== '' ? array_filter(preg_split('/[,\s]+/', $ext), fn($e) => $e !== '') : [];
+
 $disp   = strtoupper(trim((string)getParam('disposition', '')));
 $minDur = trim((string)getParam('mindur', ''));
 $preset = trim((string)getParam('preset', ''));
@@ -88,7 +97,7 @@ if ($to < $from) fail("Invalid date range: To must be same or later than From", 
 if ($disp !== '' && !preg_match('/^[A-Z_ ]+$/', $disp)) $disp = '';
 if ($src  !== '' && !preg_match('/^[0-9]+$/', $src)) $src = '';
 if ($dst  !== '' && !preg_match('/^[0-9]+$/', $dst)) $dst = '';
-if ($ext  !== '' && !preg_match('/^[0-9]+$/', $ext)) $ext = '';
+if ($ext  !== '' && !preg_match('/^[0-9,\s]+$/', $ext)) $ext = '';
 if ($minDur !== '' && (!ctype_digit($minDur) || (int)$minDur < 0)) $minDur = '';
 
 $allowedSort = ['calldate','src','dst','disposition','duration','billsec'];

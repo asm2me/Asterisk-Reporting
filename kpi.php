@@ -34,7 +34,16 @@ $availableGateways = $CONFIG['gateways'] ?? [];
 $q      = trim((string)getParam('q', ''));
 $src    = trim((string)getParam('src', ''));
 $dst    = trim((string)getParam('dst', ''));
-$ext    = trim((string)getParam('ext', ''));
+// Support multi-select: ext[] array or ext comma-separated string
+$extParam = $_GET['ext'] ?? '';
+if (is_array($extParam)) {
+    $ext = implode(',', array_filter(array_map('trim', $extParam), fn($e) => preg_match('/^[0-9]+$/', $e)));
+} else {
+    $ext = trim((string)$extParam);
+    if ($ext !== '' && !preg_match('/^[0-9,\s]+$/', $ext)) $ext = '';
+}
+$selectedExts = $ext !== '' ? array_filter(preg_split('/[,\s]+/', $ext), fn($e) => $e !== '') : [];
+
 $disp   = strtoupper(trim((string)getParam('disposition', '')));
 $minDur = trim((string)getParam('mindur', ''));
 $preset = trim((string)getParam('preset', ''));
@@ -42,8 +51,6 @@ $gateway = trim((string)getParam('gateway', ''));
 
 if (!isValidDate($from) || !isValidDate($to)) fail("Invalid date (use YYYY-MM-DD)", 400);
 if ($to < $from) fail("Invalid date range: To must be same or later than From", 400);
-
-if ($ext !== '' && !preg_match('/^[0-9]+$/', $ext)) $ext = '';
 
 $filters = [
     'from' => $from,
@@ -66,8 +73,11 @@ $kpiData = fetchExtensionKPIs($CONFIG, $pdo, $me, $filters);
 /* Fetch Agent Event KPIs (login/logout/pause from agent_event table) */
 $agentEvents = fetchAgentEventKPIs($pdo, $me, $from, $to);
 
+/* Fetch daily KPIs per extension for detail rows */
+$dailyData = fetchDailyExtensionKPIs($CONFIG, $pdo, $me, $filters);
+
 if ($format === 'excel') {
-    streamExcelKpis($kpiData, $agentEvents, $from, $to);
+    streamExcelKpis($kpiData, $agentEvents, $dailyData, $from, $to);
     exit;
 }
 

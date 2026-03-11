@@ -49,8 +49,17 @@ function buildWhere(array $CONFIG, array $me, array $filters, array &$params): s
     }
 
     // Extension filter: match calls where this extension is src OR dst OR either channel
-    $ext = trim((string)($filters['ext'] ?? ''));
-    if ($ext !== '' && preg_match('/^[0-9]+$/', $ext)) {
+    // Supports comma-separated multi-extension values
+    $extRaw = trim((string)($filters['ext'] ?? ''));
+    $extList = [];
+    if ($extRaw !== '') {
+        foreach (preg_split('/[,\s]+/', $extRaw) as $e) {
+            $e = trim($e);
+            if ($e !== '' && preg_match('/^[0-9]+$/', $e)) $extList[] = $e;
+        }
+    }
+    if (count($extList) === 1) {
+        $ext = $extList[0];
         $where[] = "(
             src = :ext_src
             OR dst = :ext_dst
@@ -65,6 +74,20 @@ function buildWhere(array $CONFIG, array $me, array $filters, array &$params): s
         $params[':ext_ch_psip']  = "PJSIP/{$ext}-%";
         $params[':ext_dch_sip']  = "SIP/{$ext}-%";
         $params[':ext_dch_psip'] = "PJSIP/{$ext}-%";
+    } elseif (count($extList) > 1) {
+        $extConds = [];
+        foreach ($extList as $i => $ext) {
+            $extConds[] = "src = :ext_src_{$i} OR dst = :ext_dst_{$i}"
+                . " OR channel LIKE :ext_ch_sip_{$i} OR channel LIKE :ext_ch_psip_{$i}"
+                . " OR dstchannel LIKE :ext_dch_sip_{$i} OR dstchannel LIKE :ext_dch_psip_{$i}";
+            $params[":ext_src_{$i}"]      = $ext;
+            $params[":ext_dst_{$i}"]      = $ext;
+            $params[":ext_ch_sip_{$i}"]   = "SIP/{$ext}-%";
+            $params[":ext_ch_psip_{$i}"]  = "PJSIP/{$ext}-%";
+            $params[":ext_dch_sip_{$i}"]  = "SIP/{$ext}-%";
+            $params[":ext_dch_psip_{$i}"] = "PJSIP/{$ext}-%";
+        }
+        $where[] = '(' . implode(' OR ', $extConds) . ')';
     }
 
     $disp = (string)($filters['disposition'] ?? '');
@@ -653,6 +676,81 @@ function fetchExtensionKPIs(array $CONFIG, PDO $pdo, array $me, array $filters):
 }
 
 /**
+ * Fetch daily KPIs per extension for the expand/detail view.
+ * Returns: [extension => [date => [total_calls, answered, missed, ...], ...], ...]
+ */
+function fetchDailyExtensionKPIs(array $CONFIG, PDO $pdo, array $me, array $filters): array {
+    $params = [];
+    $whereSql = buildWhere($CONFIG, $me, $filters, $params);
+    $cdrTable = $CONFIG['cdrTable'];
+
+    $gwExcludeConds = [];
+    foreach (($CONFIG['gateways'] ?? []) as $idx => $gw) {
+        $gwPat = rtrim(str_replace("\0", '', (string)$gw), '-%') . '-%';
+        $key = ':dkpi_gw_' . (int)$idx;
+        $gwExcludeConds[] = "channel NOT LIKE {$key}";
+        $params[$key] = $gwPat;
+    }
+    $gwExcludeSql = $gwExcludeConds ? ('AND ' . implode(' AND ', $gwExcludeConds)) : '';
+
+    $sql = "
+    SELECT
+        extension,
+        call_date,
+        COUNT(*)                                                              AS total_calls,
+        SUM(any_bridged)                                                      AS answered,
+        SUM(CASE WHEN any_bridged = 0 AND any_queue = 0 THEN 1 ELSE 0 END)   AS missed,
+        SUM(CASE WHEN any_bridged = 0 AND any_queue = 1 THEN 1 ELSE 0 END)   AS abandoned,
+        SUM(is_busy)                                                          AS busy,
+        SUM(is_failed)                                                        AS failed,
+        SUM(grp_billsec)                                                      AS total_billsec,
+        AVG(CASE WHEN any_bridged = 1 THEN grp_billsec  ELSE NULL END)       AS avg_talk_time,
+        AVG(CASE WHEN any_bridged = 1 THEN grp_wait     ELSE NULL END)       AS avg_wait_time
+    FROM (
+        SELECT
+            src                                                               AS extension,
+            DATE(calldate)                                                    AS call_date,
+            COALESCE(linkedid, uniqueid)                                      AS grp_id,
+            MAX(CASE WHEN disposition = 'ANSWERED' AND billsec > 0
+                     THEN 1 ELSE 0 END)                                      AS any_bridged,
+            MAX(CASE WHEN dcontext LIKE '%ext-queues%'
+                     THEN 1 ELSE 0 END)                                      AS any_queue,
+            MAX(CASE WHEN disposition = 'BUSY'  THEN 1 ELSE 0 END)           AS is_busy,
+            MAX(CASE WHEN disposition = 'FAILED' THEN 1 ELSE 0 END)          AS is_failed,
+            SUM(billsec)                                                      AS grp_billsec,
+            SUM(CASE WHEN disposition = 'ANSWERED' AND billsec > 0
+                     THEN (duration - billsec) ELSE 0 END)                   AS grp_wait
+        FROM `{$cdrTable}`
+        WHERE {$whereSql}
+          AND src REGEXP '^[0-9]+$'
+          {$gwExcludeSql}
+        GROUP BY src, DATE(calldate), COALESCE(linkedid, uniqueid)
+    ) AS ext_grp
+    GROUP BY extension, call_date
+    ORDER BY extension, call_date
+    ";
+
+    try {
+        $st = $pdo->prepare($sql);
+        foreach ($params as $k => $v) {
+            if (is_int($v)) {
+                $st->bindValue($k, $v, PDO::PARAM_INT);
+            } else {
+                $st->bindValue($k, (string)$v, PDO::PARAM_STR);
+            }
+        }
+        $st->execute();
+        $result = [];
+        foreach ($st->fetchAll() ?: [] as $row) {
+            $result[$row['extension']][$row['call_date']] = $row;
+        }
+        return $result;
+    } catch (Throwable $e) {
+        return [];
+    }
+}
+
+/**
  * Fetch per-extension agent event KPIs from the agent_event table.
  * Returns an associative array keyed by extension:
  *   [ext => [first_login, last_logout, login_count, logout_count,
@@ -1024,7 +1122,7 @@ function streamExcel(array $CONFIG, PDO $pdo, array $me, array $filters): void {
 /**
  * Export KPI data array as XLSX.
  */
-function streamExcelKpis(array $kpiData, array $agentEvents, string $from, string $to): void {
+function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, string $from, string $to): void {
     $headers = ['Extension','Total Calls','Answered','Missed','Abandoned','Busy','Failed',
                 'Answer Rate %','Avg Wait (sec)','Avg Talk (sec)','Total Talk (sec)',
                 'First Login','Last Logout','Online Time (sec)','Pauses','Pause Time (sec)'];
@@ -1052,6 +1150,27 @@ function streamExcelKpis(array $kpiData, array $agentEvents, string $from, strin
             (int)($ae['pause_count']      ?? 0),
             (int)($ae['total_pause_sec']  ?? 0),
         ];
+        // Append daily detail rows for this extension (expanded)
+        $extDays = $dailyData[$ext['extension']] ?? [];
+        foreach ($extDays as $date => $day) {
+            $dTotal = (int)($day['total_calls'] ?? 0);
+            $dAns   = (int)($day['answered'] ?? 0);
+            $dRate  = $dTotal > 0 ? round(($dAns / $dTotal) * 100, 1) : 0.0;
+            $rows[] = [
+                '  ' . (string)$date,
+                $dTotal,
+                $dAns,
+                (int)($day['missed']    ?? 0),
+                (int)($day['abandoned'] ?? 0),
+                (int)($day['busy']      ?? 0),
+                (int)($day['failed']    ?? 0),
+                $dRate,
+                (int)($day['avg_wait_time'] ?? 0),
+                (int)($day['avg_talk_time'] ?? 0),
+                (int)($day['total_billsec'] ?? 0),
+                '', '', 0, 0, 0,
+            ];
+        }
     }
     streamXlsx($headers, $rows, "kpi_{$from}_to_{$to}.xlsx");
 }

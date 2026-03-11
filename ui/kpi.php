@@ -18,6 +18,8 @@ use function fmtTime;
 /** @var int $totalPauseCount */
 /** @var int $totalPauseSec */
 /** @var int $totalOnlineSec */
+/** @var array $dailyData */
+/** @var array $selectedExts */
 ?>
 <!doctype html>
 <html lang="en">
@@ -89,9 +91,31 @@ use function fmtTime;
 
   .num{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:600;}
 
+  /* Expandable details */
+  .expand-toggle{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;cursor:pointer;
+                 background:rgba(122,162,255,.12);border:1px solid rgba(122,162,255,.25);border-radius:6px;user-select:none;}
+  .expand-toggle:hover{background:rgba(122,162,255,.20)}
+  .expand-icon{font-weight:bold;font-size:16px;line-height:1;transition:transform 0.2s;}
+  .expand-toggle.expanded .expand-icon{transform:rotate(45deg);}
+
+  .daily-row td{background:rgba(122,162,255,.04);font-size:12px;padding:8px 12px !important;}
+  .daily-row td:first-child{padding-left:40px !important;}
+
+  /* Multi-select extension dropdown */
+  .multiselect-wrap{position:relative;}
+  .multiselect-btn{width:100%;background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:10px;font-size:13px;outline:none;cursor:pointer;text-align:left;display:flex;justify-content:space-between;align-items:center;}
+  .multiselect-btn:hover{border-color:var(--accent);}
+  .multiselect-dropdown{display:none;position:absolute;top:100%;left:0;right:0;z-index:50;background:var(--card);border:1px solid var(--line);border-radius:12px;max-height:240px;overflow:auto;margin-top:4px;padding:6px 0;}
+  .multiselect-dropdown.open{display:block;}
+  .multiselect-dropdown label{display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:13px;margin:0;}
+  .multiselect-dropdown label:hover{background:rgba(255,255,255,.04);}
+  .multiselect-dropdown input[type="checkbox"]{accent-color:var(--accent);width:16px;height:16px;}
+  .ext-tag{display:inline-flex;padding:2px 6px;border-radius:4px;background:rgba(122,162,255,.15);font-size:11px;color:var(--accent);margin:1px 2px;}
+
   @media (max-width: 900px){
     thead{display:none;}
-    tbody tr{display:block;border-bottom:1px solid var(--line);padding:10px;margin-bottom:10px;background:rgba(15,26,48,.5);border-radius:8px;}
+    tbody tr.kpi-main{display:block;border-bottom:1px solid var(--line);padding:10px;margin-bottom:10px;background:rgba(15,26,48,.5);border-radius:8px;}
+    tbody tr.daily-row{display:block;border-bottom:1px solid var(--line);padding:8px 10px;margin-bottom:4px;background:rgba(122,162,255,.04);border-radius:6px;margin-left:20px;}
     tbody td{display:flex;gap:10px;justify-content:space-between;border-bottom:none;padding:8px 0;}
     tbody td::before{content: attr(data-label);color: var(--muted);font-size:12px;font-weight:600;}
   }
@@ -174,14 +198,20 @@ use function fmtTime;
         <div><label>Src (number OR channel)</label><input name="src" value="<?= h($src ?? '') ?>" placeholder="1001"></div>
         <div><label>Dst (number OR dstchannel)</label><input name="dst" value="<?= h($dst ?? '') ?>" placeholder="2000"></div>
 
-        <div>
+        <div class="multiselect-wrap" id="extMultiWrap">
           <label>Extension</label>
-          <select name="ext">
-            <option value="">All Extensions</option>
+          <div class="multiselect-btn" id="extMultiBtn" onclick="toggleExtDropdown()">
+            <span id="extMultiLabel"><?= empty($selectedExts) ? 'All Extensions' : implode(', ', array_map(fn($e) => h($e), $selectedExts)) ?></span>
+            <span style="font-size:10px;color:var(--muted);">▼</span>
+          </div>
+          <div class="multiselect-dropdown" id="extMultiDrop">
             <?php foreach ($availableExtensions as $e): ?>
-              <option value="<?= h($e) ?>" <?= (($ext ?? '') === $e) ? 'selected' : '' ?>><?= h($e) ?></option>
+              <label>
+                <input type="checkbox" name="ext[]" value="<?= h($e) ?>" <?= in_array($e, $selectedExts) ? 'checked' : '' ?> onchange="updateExtLabel()">
+                <?= h($e) ?>
+              </label>
             <?php endforeach; ?>
-          </select>
+          </div>
         </div>
 
         <div>
@@ -232,6 +262,7 @@ use function fmtTime;
     <table>
       <thead>
         <tr>
+          <th style="width:30px;"></th>
           <th>Extension</th>
           <th>Total Calls</th>
           <th>Answered</th>
@@ -252,9 +283,10 @@ use function fmtTime;
       </thead>
       <tbody>
         <?php if (empty($kpiData)): ?>
-          <tr><td colspan="16" style="color:var(--muted);padding:16px;text-align:center;">No data for this period.</td></tr>
+          <tr><td colspan="17" style="color:var(--muted);padding:16px;text-align:center;">No data for this period.</td></tr>
         <?php else: ?>
-          <?php foreach ($kpiData as $ext):
+          <?php $extIdx = 0; foreach ($kpiData as $ext):
+            $extIdx++;
             $totalCalls = (int)($ext['total_calls'] ?? 0);
             $answered = (int)($ext['answered'] ?? 0);
             $missed = (int)($ext['missed'] ?? 0);
@@ -276,8 +308,19 @@ use function fmtTime;
             $onlineSec   = (int)($ae['online_sec'] ?? 0);
             $pauseCount  = (int)($ae['pause_count'] ?? 0);
             $pauseSec    = (int)($ae['total_pause_sec'] ?? 0);
+
+            $extDays = $dailyData[$ext['extension']] ?? [];
+            $hasDays = !empty($extDays);
+            $dayRowId = 'days-' . $extIdx;
           ?>
-            <tr>
+            <tr class="kpi-main">
+              <td style="text-align:center;">
+                <?php if ($hasDays): ?>
+                  <span class="expand-toggle" onclick="toggleKpiDetails('<?= h($dayRowId) ?>')" title="Show daily details">
+                    <span class="expand-icon">+</span>
+                  </span>
+                <?php endif; ?>
+              </td>
               <td data-label="Extension"><strong><?= h($ext['extension']) ?></strong></td>
               <td data-label="Total Calls"><span class="num"><?= (int)$totalCalls ?></span></td>
               <td data-label="Answered"><span class="num" style="color:var(--ok)"><?= (int)$answered ?></span></td>
@@ -297,6 +340,35 @@ use function fmtTime;
               <td data-label="Pauses"><span class="num" style="color:var(--warn)"><?= $pauseCount ?></span></td>
               <td data-label="Pause Time" style="color:var(--warn)"><?= $pauseSec > 0 ? h(fmtTime($pauseSec)) : '<span style="color:var(--muted)">—</span>' ?></td>
             </tr>
+            <?php if ($hasDays): foreach ($extDays as $date => $day):
+              $dTotal = (int)($day['total_calls'] ?? 0);
+              $dAns   = (int)($day['answered'] ?? 0);
+              $dMiss  = (int)($day['missed'] ?? 0);
+              $dAband = (int)($day['abandoned'] ?? 0);
+              $dBusy  = (int)($day['busy'] ?? 0);
+              $dFail  = (int)($day['failed'] ?? 0);
+              $dRate  = $dTotal > 0 ? round(($dAns / $dTotal) * 100, 1) : 0;
+              $dRBadge = $dRate >= 80 ? 'high' : ($dRate >= 60 ? 'medium' : 'low');
+              $dAvgW  = (int)($day['avg_wait_time'] ?? 0);
+              $dAvgT  = (int)($day['avg_talk_time'] ?? 0);
+              $dBill  = (int)($day['total_billsec'] ?? 0);
+            ?>
+              <tr class="daily-row <?= h($dayRowId) ?>" style="display:none;">
+                <td></td>
+                <td data-label="Date" style="color:var(--muted);padding-left:24px;">📅 <?= h($date) ?></td>
+                <td data-label="Total Calls"><span class="num"><?= $dTotal ?></span></td>
+                <td data-label="Answered"><span class="num" style="color:var(--ok)"><?= $dAns ?></span></td>
+                <td data-label="Missed"><span class="num" style="color:var(--bad)"><?= $dMiss ?></span></td>
+                <td data-label="Abandoned"><span class="num" style="color:var(--warn)"><?= $dAband ?></span></td>
+                <td data-label="Busy"><span class="num" style="color:var(--warn)"><?= $dBusy ?></span></td>
+                <td data-label="Failed"><span class="num" style="color:var(--bad)"><?= $dFail ?></span></td>
+                <td data-label="Answer Rate"><span class="badge <?= h($dRBadge) ?>"><?= number_format($dRate, 1) ?>%</span></td>
+                <td data-label="Avg Wait Time"><span class="num"><?= $dAvgW ?></span> sec</td>
+                <td data-label="Avg Talk Time"><span class="num"><?= $dAvgT ?></span> sec</td>
+                <td data-label="Total Talk Time"><?= h(fmtTime($dBill)) ?></td>
+                <td colspan="5"></td>
+              </tr>
+            <?php endforeach; endif; ?>
           <?php endforeach; ?>
         <?php endif; ?>
       </tbody>
@@ -304,5 +376,39 @@ use function fmtTime;
   </div>
 
 </div>
+
+<script>
+function toggleKpiDetails(className) {
+  const rows = document.querySelectorAll('.' + className);
+  const toggle = event.currentTarget;
+  const isExpanded = toggle.classList.contains('expanded');
+
+  rows.forEach(r => { r.style.display = isExpanded ? 'none' : 'table-row'; });
+  toggle.classList.toggle('expanded');
+}
+
+function toggleExtDropdown() {
+  document.getElementById('extMultiDrop').classList.toggle('open');
+}
+
+function updateExtLabel() {
+  const checks = document.querySelectorAll('#extMultiDrop input[type="checkbox"]:checked');
+  const label = document.getElementById('extMultiLabel');
+  if (checks.length === 0) {
+    label.textContent = 'All Extensions';
+  } else {
+    const vals = Array.from(checks).map(c => c.value);
+    label.innerHTML = vals.map(v => '<span class="ext-tag">' + v + '</span>').join(' ');
+  }
+}
+
+// Close dropdown when clicking outside
+document.addEventListener('click', function(e) {
+  const wrap = document.getElementById('extMultiWrap');
+  if (wrap && !wrap.contains(e.target)) {
+    document.getElementById('extMultiDrop').classList.remove('open');
+  }
+});
+</script>
 </body>
 </html>
