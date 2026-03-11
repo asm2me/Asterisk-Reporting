@@ -61,10 +61,21 @@ use function fmtTime;
   thead th{position:sticky;top:0;background:rgba(15,26,48,.92);border-bottom:1px solid var(--line);
        font-size:12px;color:var(--muted);text-align:left;padding:12px;white-space:nowrap}
   tbody td{border-bottom:1px solid var(--line);padding:12px;font-size:13px;}
-  tbody tr:hover{background:rgba(255,255,255,.03)}
+  tbody tr:hover td{background:rgba(255,255,255,.02)}
 
   .tableWrap{padding:0;overflow:auto;-webkit-overflow-scrolling:touch}
   .num{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:600;}
+
+  /* Expand toggle */
+  .expand-toggle{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;cursor:pointer;
+                 background:rgba(255,204,102,.12);border:1px solid rgba(255,204,102,.3);border-radius:6px;user-select:none;flex-shrink:0;}
+  .expand-toggle:hover{background:rgba(255,204,102,.22)}
+  .expand-icon{font-weight:bold;font-size:14px;line-height:1;color:var(--warn);transition:transform 0.2s;}
+  .expand-toggle.expanded .expand-icon{transform:rotate(45deg);}
+
+  /* Detail (break) rows */
+  .break-detail td{background:rgba(255,204,102,.04);font-size:12px;padding:7px 12px !important;}
+  .break-detail td:first-child{padding-left:44px !important;}
 
   /* Multi-select extension dropdown */
   .multiselect-wrap{position:relative;}
@@ -77,11 +88,10 @@ use function fmtTime;
   .multiselect-dropdown input[type="checkbox"]{accent-color:var(--accent);width:16px;height:16px;}
   .ext-tag{display:inline-flex;padding:2px 6px;border-radius:4px;background:rgba(122,162,255,.15);font-size:11px;color:var(--accent);margin:1px 2px;}
 
-  .alt-row{background:rgba(255,204,102,.03);}
-
   @media(max-width:900px){
     thead{display:none;}
-    tbody tr{display:block;border-bottom:1px solid var(--line);padding:10px;margin-bottom:8px;background:rgba(15,26,48,.5);border-radius:8px;}
+    tbody tr.break-main{display:block;border-bottom:1px solid var(--line);padding:10px;margin-bottom:8px;background:rgba(15,26,48,.5);border-radius:8px;}
+    tbody tr.break-detail{display:block;padding:8px 10px;margin-bottom:4px;background:rgba(255,204,102,.04);border-radius:6px;margin-left:20px;}
     tbody td{display:flex;gap:10px;justify-content:space-between;border-bottom:none;padding:6px 0;}
     tbody td::before{content:attr(data-label);color:var(--muted);font-size:12px;font-weight:600;}
   }
@@ -145,41 +155,60 @@ use function fmtTime;
     <table>
       <thead>
         <tr>
+          <th style="width:30px;"></th>
           <th>Extension</th>
           <th>Date</th>
-          <th>Break Reason</th>
-          <th>Start</th>
-          <th>Stop</th>
-          <th>Duration</th>
+          <th>Breaks</th>
+          <th>Total Break Time</th>
         </tr>
       </thead>
       <tbody>
         <?php
         $hasAny = false;
-        $altToggle = 0;
+        $rowIdx = 0;
         foreach ($breaksData as $extNum => $dates):
           $sortedDates = array_keys($dates);
           sort($sortedDates);
           foreach ($sortedDates as $date):
-            foreach ($dates[$date] as $brk):
-              $hasAny = true;
-              $altToggle++;
+            $breaks = $dates[$date];
+            $breakCount = count($breaks);
+            $totalSec = array_sum(array_column($breaks, 'duration'));
+            $hasAny = true;
+            $rowIdx++;
+            $detailId = 'brk-' . $rowIdx;
         ?>
-          <tr class="<?= $altToggle % 2 === 0 ? 'alt-row' : '' ?>">
+          <tr class="break-main">
+            <td style="text-align:center;">
+              <span class="expand-toggle" onclick="toggleBreakDetail('<?= h($detailId) ?>')" title="Show breaks">
+                <span class="expand-icon">+</span>
+              </span>
+            </td>
             <td data-label="Extension"><strong style="color:var(--accent);"><?= h($extNum) ?></strong></td>
-            <td data-label="Date" style="color:var(--muted);"><?= h($date) ?></td>
-            <td data-label="Break Reason" style="color:var(--warn);">
+            <td data-label="Date" style="color:var(--muted);">📅 <?= h($date) ?></td>
+            <td data-label="Breaks"><span class="num" style="color:var(--warn);"><?= $breakCount ?></span></td>
+            <td data-label="Total Break Time" style="color:var(--warn);"><?= h(fmtTime($totalSec)) ?></td>
+          </tr>
+          <?php foreach ($breaks as $brk): ?>
+          <tr class="break-detail <?= h($detailId) ?>" style="display:none;">
+            <td></td>
+            <td data-label="Break Reason" colspan="2" style="color:var(--warn);">
               ⏸️ <?= $brk['reason'] !== '' ? h($brk['reason']) : '<span style="color:var(--muted)">No reason</span>' ?>
             </td>
             <td data-label="Start"><span class="num"><?= h($brk['start']) ?></span></td>
-            <td data-label="Stop">
-              <?= $brk['stop'] !== '' ? '<span class="num">' . h($brk['stop']) . '</span>' : '<span style="color:var(--warn)">Still on break</span>' ?>
+            <td data-label="Stop / Duration">
+              <?php if ($brk['stop'] !== ''): ?>
+                <span class="num"><?= h($brk['stop']) ?></span>
+                <span style="color:var(--muted);margin-left:8px;"><?= h(fmtTime($brk['duration'])) ?></span>
+              <?php else: ?>
+                <span style="color:var(--warn);">Still on break</span>
+                <span style="color:var(--muted);margin-left:8px;"><?= h(fmtTime($brk['duration'])) ?></span>
+              <?php endif; ?>
             </td>
-            <td data-label="Duration" style="color:var(--accent);"><?= h(fmtTime($brk['duration'])) ?></td>
           </tr>
-        <?php endforeach; endforeach; endforeach; ?>
+          <?php endforeach; ?>
+        <?php endforeach; endforeach; ?>
         <?php if (!$hasAny): ?>
-          <tr><td colspan="6" style="color:var(--muted);padding:16px;text-align:center;">No breaks recorded for this period.</td></tr>
+          <tr><td colspan="5" style="color:var(--muted);padding:16px;text-align:center;">No breaks recorded for this period.</td></tr>
         <?php endif; ?>
       </tbody>
     </table>
@@ -188,6 +217,14 @@ use function fmtTime;
 </div>
 
 <script>
+function toggleBreakDetail(className) {
+  const rows = document.querySelectorAll('.' + className);
+  const toggle = event.currentTarget;
+  const isExpanded = toggle.classList.contains('expanded');
+  rows.forEach(r => { r.style.display = isExpanded ? 'none' : 'table-row'; });
+  toggle.classList.toggle('expanded');
+}
+
 function toggleExtDropdown() {
   document.getElementById('extMultiDrop').classList.toggle('open');
 }
