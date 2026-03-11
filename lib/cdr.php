@@ -1304,6 +1304,19 @@ function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, a
                 ];
             }
 
+            // Calculate per-day online time and pause totals
+            $dayOnlineSec = 0;
+            if ($dayFirstLogin !== '' && $dayLastLogout !== '') {
+                $loginTs  = strtotime($date . ' ' . $dayFirstLogin);
+                $logoutTs = strtotime($date . ' ' . $dayLastLogout);
+                $dayOnlineSec = max(0, $logoutTs - $loginTs);
+            }
+            $dayPauseCount = count($dayBreaks);
+            $dayPauseSec = 0;
+            foreach ($dayBreaks as $brk) {
+                $dayPauseSec += (int)$brk['duration'];
+            }
+
             // First row for the day: call stats + first login/last logout + first break (if any)
             $firstBreak = $dayBreaks[0] ?? null;
             $rows[] = [
@@ -1320,7 +1333,9 @@ function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, a
                 $day ? secsToHms((int)($day['total_billsec'] ?? 0)) : '00:00:00',
                 $dayFirstLogin,
                 $dayLastLogout,
-                '', 0, '',
+                $dayOnlineSec > 0 ? secsToHms($dayOnlineSec) : '',
+                $dayPauseCount,
+                $dayPauseSec > 0 ? secsToHms($dayPauseSec) : '',
                 $firstBreak ? (string)($firstBreak['reason'] ?? '') : '',
                 $firstBreak ? $firstBreak['start'] : '',
                 $firstBreak ? $firstBreak['stop'] : '',

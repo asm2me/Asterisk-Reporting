@@ -6,7 +6,7 @@ Run manually:
     python3.6 process-agent-logs.py
 
 Or with options:
-    python3.6 process-agent-logs.py --force        # Re-process even if data exists
+    python3.6 process-agent-logs.py --force        # Re-process all logs including archived/rotated
     python3.6 process-agent-logs.py --full-only     # Only process full log
     python3.6 process-agent-logs.py --queue-only    # Only process queue_log
 
@@ -14,6 +14,8 @@ This is the same logic the realtime websocket service runs on startup.
 """
 
 import asyncio
+import glob
+import gzip
 import json
 import os
 import re
@@ -134,6 +136,52 @@ async def insert_agent_event(extension, event_type, event_time=None,
         print("insert_agent_event error: {}".format(e))
 
 
+# ── Archived Log Discovery ────────────────────────────────────────
+
+def find_log_files(base_path):
+    """Find the base log and all rotated/archived copies, sorted oldest first.
+    Handles patterns:
+      - Date-based: full-20260305, queue_log-20260210
+      - Numeric rotation: full.1, full.2, full.1.gz, full.2.gz
+    """
+    files = []
+    parent = os.path.dirname(base_path)
+    base_name = os.path.basename(base_path)
+
+    # Pattern 1: date-based archives (e.g. full-20260305, queue_log-20260210)
+    for entry in glob.glob(os.path.join(parent, base_name + '-*')):
+        fname = os.path.basename(entry)
+        suffix = fname[len(base_name) + 1:]  # after the dash
+        date_str = suffix.replace('.gz', '')
+        if re.match(r'^\d{8}$', date_str):
+            files.append((date_str, entry))
+
+    # Pattern 2: numeric rotation (e.g. full.1, full.2.gz)
+    for entry in glob.glob(os.path.join(parent, base_name + '.*')):
+        fname = os.path.basename(entry)
+        suffix = fname[len(base_name) + 1:]  # after the dot
+        num_str = suffix.replace('.gz', '')
+        if num_str.isdigit():
+            # Convert to sortable string (pad so numeric sorts after dates)
+            files.append(('N{:010d}'.format(99999999 - int(num_str)), entry))
+
+    # Sort ascending by key (dates sort chronologically, highest rotation number = oldest first)
+    files.sort(key=lambda x: x[0])
+    ordered = [f[1] for f in files]
+
+    # Append the current (non-rotated) file last (it's the newest)
+    if os.path.isfile(base_path):
+        ordered.append(base_path)
+    return ordered
+
+
+def open_log_file(path):
+    """Open a log file, handling .gz transparently."""
+    if path.endswith('.gz'):
+        return gzip.open(path, 'rt', errors='replace')
+    return open(path, 'r', errors='replace')
+
+
 # ── Full Log Parser ───────────────────────────────────────────────
 
 async def parse_full_log_history(force=False):
@@ -156,7 +204,17 @@ async def parse_full_log_history(force=False):
         except Exception:
             pass
 
-    print("[FullLog] Parsing {} for registration history...".format(FULL_LOG_PATH))
+    # Discover log files: current + archived/rotated
+    if force:
+        log_files = find_log_files(FULL_LOG_PATH)
+    else:
+        log_files = [FULL_LOG_PATH] if os.path.isfile(FULL_LOG_PATH) else []
+
+    if not log_files:
+        print("[FullLog] {} not found, skipping".format(FULL_LOG_PATH))
+        return
+
+    print("[FullLog] Will process {} file(s): {}".format(len(log_files), ', '.join(os.path.basename(f) for f in log_files)))
 
     re_timestamp = re.compile(r'^\[(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\]')
     re_endpoint_status = re.compile(
@@ -175,86 +233,89 @@ async def parse_full_log_history(force=False):
 
     inserted = 0
     lines_read = 0
-    try:
-        with open(FULL_LOG_PATH, 'r', errors='replace') as f:
-            for raw_line in f:
-                lines_read += 1
-                if lines_read % 50000 == 0:
-                    print("[FullLog] Processing... {} lines read, {} events found".format(lines_read, inserted))
 
-                ts_match = re_timestamp.match(raw_line)
-                if not ts_match:
-                    continue
-                log_date = ts_match.group(1)
-                log_time = ts_match.group(2)
+    for log_file in log_files:
+        print("[FullLog] Processing {}...".format(log_file))
+        try:
+            with open_log_file(log_file) as f:
+                for raw_line in f:
+                    lines_read += 1
+                    if lines_read % 50000 == 0:
+                        print("[FullLog] Processing... {} lines read, {} events found".format(lines_read, inserted))
 
-                try:
-                    event_time = datetime.strptime("{} {}".format(log_date, log_time), '%Y-%m-%d %H:%M:%S')
-                except ValueError:
-                    continue
+                    ts_match = re_timestamp.match(raw_line)
+                    if not ts_match:
+                        continue
+                    log_date = ts_match.group(1)
+                    log_time = ts_match.group(2)
 
-                m = re_endpoint_status.search(raw_line)
-                if m:
-                    ext, status = m.group(1), m.group(2)
-                    event_type = 'LOGIN' if status == 'Reachable' else 'LOGOUT'
-                    await insert_agent_event(ext, event_type, event_time=event_time,
-                                              source='full_log', reason=status,
-                                              extra=raw_line.strip()[:255])
-                    inserted += 1
-                    continue
+                    try:
+                        event_time = datetime.strptime("{} {}".format(log_date, log_time), '%Y-%m-%d %H:%M:%S')
+                    except ValueError:
+                        continue
 
-                m = re_contact_reachable.search(raw_line)
-                if m:
-                    ext, status = m.group(1), m.group(2)
-                    event_type = 'LOGIN' if status == 'Reachable' else 'LOGOUT'
-                    await insert_agent_event(ext, event_type, event_time=event_time,
-                                              source='full_log', reason=status,
-                                              extra=raw_line.strip()[:255])
-                    inserted += 1
-                    continue
+                    m = re_endpoint_status.search(raw_line)
+                    if m:
+                        ext, status = m.group(1), m.group(2)
+                        event_type = 'LOGIN' if status == 'Reachable' else 'LOGOUT'
+                        await insert_agent_event(ext, event_type, event_time=event_time,
+                                                  source='full_log', reason=status,
+                                                  extra=raw_line.strip()[:255])
+                        inserted += 1
+                        continue
 
-                m = re_contact_deleted.search(raw_line)
-                if m:
-                    ext = m.group(1)
-                    await insert_agent_event(ext, 'LOGOUT', event_time=event_time,
-                                              source='full_log', reason='Deleted',
-                                              extra=raw_line.strip()[:255])
-                    inserted += 1
-                    continue
+                    m = re_contact_reachable.search(raw_line)
+                    if m:
+                        ext, status = m.group(1), m.group(2)
+                        event_type = 'LOGIN' if status == 'Reachable' else 'LOGOUT'
+                        await insert_agent_event(ext, event_type, event_time=event_time,
+                                                  source='full_log', reason=status,
+                                                  extra=raw_line.strip()[:255])
+                        inserted += 1
+                        continue
 
-                m = re_contact_added.search(raw_line)
-                if m:
-                    ext = m.group(1)
-                    await insert_agent_event(ext, 'LOGIN', event_time=event_time,
-                                              source='full_log', reason='ContactAdded',
-                                              extra=raw_line.strip()[:255])
-                    inserted += 1
-                    continue
+                    m = re_contact_deleted.search(raw_line)
+                    if m:
+                        ext = m.group(1)
+                        await insert_agent_event(ext, 'LOGOUT', event_time=event_time,
+                                                  source='full_log', reason='Deleted',
+                                                  extra=raw_line.strip()[:255])
+                        inserted += 1
+                        continue
 
-                m = re_contact_removed.search(raw_line)
-                if m:
-                    ext = m.group(1)
-                    await insert_agent_event(ext, 'LOGOUT', event_time=event_time,
-                                              source='full_log', reason='ContactRemoved',
-                                              extra=raw_line.strip()[:255])
-                    inserted += 1
-                    continue
+                    m = re_contact_added.search(raw_line)
+                    if m:
+                        ext = m.group(1)
+                        await insert_agent_event(ext, 'LOGIN', event_time=event_time,
+                                                  source='full_log', reason='ContactAdded',
+                                                  extra=raw_line.strip()[:255])
+                        inserted += 1
+                        continue
 
-                m = re_peer_status.search(raw_line)
-                if m:
-                    ext, status = m.group(1), m.group(2)
-                    event_type = 'LOGIN' if status in ('Reachable', 'Registered') else 'LOGOUT'
-                    await insert_agent_event(ext, event_type, event_time=event_time,
-                                              source='full_log', reason=status,
-                                              extra=raw_line.strip()[:255])
-                    inserted += 1
+                    m = re_contact_removed.search(raw_line)
+                    if m:
+                        ext = m.group(1)
+                        await insert_agent_event(ext, 'LOGOUT', event_time=event_time,
+                                                  source='full_log', reason='ContactRemoved',
+                                                  extra=raw_line.strip()[:255])
+                        inserted += 1
+                        continue
 
-        print("[FullLog] Done - {} lines read, {} events inserted".format(lines_read, inserted))
+                    m = re_peer_status.search(raw_line)
+                    if m:
+                        ext, status = m.group(1), m.group(2)
+                        event_type = 'LOGIN' if status in ('Reachable', 'Registered') else 'LOGOUT'
+                        await insert_agent_event(ext, event_type, event_time=event_time,
+                                                  source='full_log', reason=status,
+                                                  extra=raw_line.strip()[:255])
+                        inserted += 1
 
-    except FileNotFoundError:
-        print("[FullLog] {} not found, skipping".format(FULL_LOG_PATH))
-    except Exception as e:
-        print("[FullLog] Error: {}".format(e))
+        except FileNotFoundError:
+            print("[FullLog] {} not found, skipping".format(log_file))
+        except Exception as e:
+            print("[FullLog] Error reading {}: {}".format(log_file, e))
+
+    print("[FullLog] Done - {} lines read, {} events inserted across {} file(s)".format(lines_read, inserted, len(log_files)))
 
 
 # ── Queue Log Parser ──────────────────────────────────────────────
@@ -320,30 +381,44 @@ async def parse_queue_log_history(force=False):
         except Exception:
             pass
 
-    print("[QueueLog] Backfilling from {}...".format(QUEUE_LOG_PATH))
+    # Discover log files: current + archived/rotated
+    if force:
+        log_files = find_log_files(QUEUE_LOG_PATH)
+    else:
+        log_files = [QUEUE_LOG_PATH] if os.path.isfile(QUEUE_LOG_PATH) else []
+
+    if not log_files:
+        print("[QueueLog] {} not found, skipping".format(QUEUE_LOG_PATH))
+        return
+
+    print("[QueueLog] Will process {} file(s): {}".format(len(log_files), ', '.join(os.path.basename(f) for f in log_files)))
+
     inserted = 0
     lines_read = 0
-    try:
-        with open(QUEUE_LOG_PATH, 'r') as f:
-            for line in f:
-                lines_read += 1
-                if lines_read % 50000 == 0:
-                    print("[QueueLog] Processing... {} lines read, {} events found".format(lines_read, inserted))
-                line = line.strip()
-                if not line:
-                    continue
-                parts = line.split('|')
-                if len(parts) < 5:
-                    continue
-                event = parts[4].strip().upper()
-                if event in ('PAUSE', 'UNPAUSE', 'PAUSEALL', 'UNPAUSEALL'):
-                    await process_queue_log_line(line)
-                    inserted += 1
-        print("[QueueLog] Done - {} lines read, {} pause events inserted".format(lines_read, inserted))
-    except FileNotFoundError:
-        print("[QueueLog] {} not found, skipping".format(QUEUE_LOG_PATH))
-    except Exception as e:
-        print("[QueueLog] Error: {}".format(e))
+    for log_file in log_files:
+        print("[QueueLog] Processing {}...".format(log_file))
+        try:
+            with open_log_file(log_file) as f:
+                for line in f:
+                    lines_read += 1
+                    if lines_read % 50000 == 0:
+                        print("[QueueLog] Processing... {} lines read, {} events found".format(lines_read, inserted))
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split('|')
+                    if len(parts) < 5:
+                        continue
+                    event = parts[4].strip().upper()
+                    if event in ('PAUSE', 'UNPAUSE', 'PAUSEALL', 'UNPAUSEALL'):
+                        await process_queue_log_line(line)
+                        inserted += 1
+        except FileNotFoundError:
+            print("[QueueLog] {} not found, skipping".format(log_file))
+        except Exception as e:
+            print("[QueueLog] Error reading {}: {}".format(log_file, e))
+
+    print("[QueueLog] Done - {} lines read, {} pause events inserted across {} file(s)".format(lines_read, inserted, len(log_files)))
 
 
 # ── Main ──────────────────────────────────────────────────────────
@@ -352,6 +427,20 @@ async def run(force=False, full_only=False, queue_only=False):
     """Main processing entry point. Called by CLI and by the service."""
     await init_db_pool()
     await ensure_agent_event_table()
+
+    # When forcing, clear existing data for the sources we're about to re-process
+    if force and db_pool is not None:
+        try:
+            async with db_pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    if not queue_only:
+                        await cur.execute("DELETE FROM agent_event WHERE source='full_log'")
+                        print("[Force] Cleared existing full_log events")
+                    if not full_only:
+                        await cur.execute("DELETE FROM agent_event WHERE source='queue_log'")
+                        print("[Force] Cleared existing queue_log events")
+        except Exception as e:
+            print("[Force] Error clearing old data: {}".format(e))
 
     if not queue_only:
         await parse_full_log_history(force=force)
@@ -378,7 +467,7 @@ def main():
     print("Asterisk Agent Log Processor")
     print("=" * 60)
     if force:
-        print("Mode: FORCE (will re-process even if data exists)")
+        print("Mode: FORCE (will re-process all logs including archived/rotated)")
     print("")
 
     loop = asyncio.get_event_loop()

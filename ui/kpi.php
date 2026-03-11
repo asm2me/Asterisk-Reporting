@@ -402,6 +402,19 @@ use function fmtTime;
                       'reason'   => $openPause['reason'],
                   ];
               }
+              // Calculate per-day online time (first login to last logout)
+              $dayOnlineSec = 0;
+              if ($dayFirstLogin !== '' && $dayLastLogout !== '') {
+                  $loginTs  = strtotime($date . ' ' . $dayFirstLogin);
+                  $logoutTs = strtotime($date . ' ' . $dayLastLogout);
+                  $dayOnlineSec = max(0, $logoutTs - $loginTs);
+              }
+              // Per-day pause count and total pause time
+              $dayPauseCount = count($dayBreaks);
+              $dayPauseSec = 0;
+              foreach ($dayBreaks as $brk) {
+                  $dayPauseSec += (int)$brk['duration'];
+              }
               $hasAgentInfo = ($dayFirstLogin !== '' || $dayLastLogout !== '' || !empty($dayBreaks));
             ?>
               <tr class="daily-row <?= h($dayRowId) ?>" style="display:none;">
@@ -419,7 +432,9 @@ use function fmtTime;
                 <td data-label="Total Talk Time"><?= h(fmtTime($dBill)) ?></td>
                 <td data-label="First Login" style="color:var(--ok);"><?= $dayFirstLogin ? '🟢 ' . h($dayFirstLogin) : '<span style="color:var(--muted)">—</span>' ?></td>
                 <td data-label="Last Logout" style="color:var(--bad);"><?= $dayLastLogout ? '🔴 ' . h($dayLastLogout) : '<span style="color:var(--muted)">—</span>' ?></td>
-                <td colspan="3"></td>
+                <td data-label="Online Time" style="color:var(--accent)"><?= $dayOnlineSec > 0 ? h(fmtTime($dayOnlineSec)) : '<span style="color:var(--muted)">—</span>' ?></td>
+                <td data-label="Pauses"><span class="num" style="color:var(--warn)"><?= $dayPauseCount ?></span></td>
+                <td data-label="Pause Time" style="color:var(--warn)"><?= $dayPauseSec > 0 ? h(fmtTime($dayPauseSec)) : '<span style="color:var(--muted)">—</span>' ?></td>
               </tr>
               <?php if (!empty($dayBreaks)): ?>
               <tr class="daily-row <?= h($dayRowId) ?>" style="display:none;">
