@@ -181,11 +181,17 @@ use function fmtTime;
           sort($sortedDates);
           foreach ($sortedDates as $date):
             $d = $dates[$date];
-            // Collect only LOGIN/LOGOUT events for this extension+date
-            $loginLogoutEvents = array_values(array_filter(
-                $dailyAgentEvents[$extNum][$date] ?? [],
-                fn($ev) => $ev['type'] === 'LOGIN' || $ev['type'] === 'LOGOUT'
-            ));
+            // Collect LOGIN/LOGOUT events, deduplicated by type+time
+            $loginLogoutEvents = [];
+            $seenEvt = [];
+            foreach ($dailyAgentEvents[$extNum][$date] ?? [] as $ev) {
+                if ($ev['type'] !== 'LOGIN' && $ev['type'] !== 'LOGOUT') continue;
+                $key = $ev['type'] . '|' . $ev['time'];
+                if (!isset($seenEvt[$key])) {
+                    $seenEvt[$key] = true;
+                    $loginLogoutEvents[] = $ev;
+                }
+            }
             $hasAny = true;
             $rowIdx++;
             $detailId = 'att-' . $rowIdx;
