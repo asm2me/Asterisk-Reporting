@@ -1516,26 +1516,110 @@ function computeBreaksData(array $dailyAgentEvents): array {
 /**
  * Export attendance data as XLSX.
  */
-function streamExcelAttendance(array $attendanceData, string $from, string $to): void {
-    $headers = ['Extension','Date','First Login','Last Logout','Online Time','Logins','Logouts'];
-    $rows = [];
-    foreach ($attendanceData as $ext => $dates) {
+/**
+ * Deduplicate LOGIN/LOGOUT events by type+time and pair them into sessions.
+ * Returns [ext => [date => ['first_login','last_logout','online_sec','login_count','logout_count','sessions']]]
+ */
+function attDeduplicateAndPair(array $dailyAgentEvents): array {
+    $result = [];
+    foreach ($dailyAgentEvents as $ext => $dates) {
         $sortedDates = array_keys($dates);
         sort($sortedDates);
         foreach ($sortedDates as $date) {
-            $d = $dates[$date];
-            $rows[] = [
-                $ext,
-                $date,
+            $events = $dates[$date];
+            // Deduplicate by type+time
+            $dedup = []; $seen = [];
+            foreach ($events as $ev) {
+                if ($ev['type'] !== 'LOGIN' && $ev['type'] !== 'LOGOUT') continue;
+                $key = $ev['type'] . '|' . $ev['time'];
+                if (!isset($seen[$key])) { $seen[$key] = true; $dedup[] = $ev; }
+            }
+            // Pair LOGIN→LOGOUT chronologically
+            $sessions = []; $openLogin = null;
+            foreach ($dedup as $ev) {
+                if ($ev['type'] === 'LOGIN') {
+                    $openLogin = $ev['time'];
+                } elseif ($ev['type'] === 'LOGOUT' && $openLogin !== null) {
+                    $lTs = strtotime($date . ' ' . $openLogin);
+                    $oTs = strtotime($date . ' ' . $ev['time']);
+                    $sessions[] = ['login' => $openLogin, 'logout' => $ev['time'], 'duration' => max(0, $oTs - $lTs)];
+                    $openLogin = null;
+                }
+            }
+            if ($openLogin !== null) {
+                $lTs   = strtotime($date . ' ' . $openLogin);
+                $nowTs = ($date === date('Y-m-d')) ? time() : strtotime($date . ' 23:59:59');
+                $sessions[] = ['login' => $openLogin, 'logout' => '', 'duration' => max(0, $nowTs - $lTs)];
+            }
+            $firstLogin = ''; foreach ($dedup as $ev) { if ($ev['type'] === 'LOGIN')  { $firstLogin = $ev['time']; break; } }
+            $lastLogout = ''; foreach ($dedup as $ev) { if ($ev['type'] === 'LOGOUT') { $lastLogout = $ev['time']; } }
+            $result[$ext][$date] = [
+                'first_login'  => $firstLogin,
+                'last_logout'  => $lastLogout,
+                'online_sec'   => array_sum(array_column($sessions, 'duration')),
+                'login_count'  => count(array_filter($dedup, fn($e) => $e['type'] === 'LOGIN')),
+                'logout_count' => count(array_filter($dedup, fn($e) => $e['type'] === 'LOGOUT')),
+                'sessions'     => $sessions,
+            ];
+        }
+    }
+    return $result;
+}
+
+/**
+ * Export attendance as multi-sheet XLSX.
+ * Summary sheet (one row per ext+date) with clickable links → per-extension detail sheets.
+ * Detail sheet: Date | Login | Logout | Session Duration.
+ */
+function streamExcelAttendance(array $dailyAgentEvents, string $from, string $to): void {
+    $paired = attDeduplicateAndPair($dailyAgentEvents);
+    ksort($paired);
+
+    $summaryHeaders = ['Extension','Date','First Login','Last Logout','Online Time','Logins','Logouts'];
+    $detailHeaders  = ['Date','Login','Logout','Session Duration'];
+
+    $summaryRows = [];
+    $hyperlinks  = [];
+    $sheets      = [['name' => 'Summary', 'xml' => '']];
+
+    foreach ($paired as $ext => $dates) {
+        $sheetName = 'Ext_' . $ext;
+        if (strlen($sheetName) > 31) $sheetName = substr($sheetName, 0, 31);
+
+        $detailRows = [['<< Back to Summary', '', '', '']];
+
+        foreach ($dates as $date => $d) {
+            $summaryRowNum = count($summaryRows) + 2;
+            // Hyperlink on Extension column only on first date row of each ext
+            if (count(array_filter($summaryRows, fn($r) => $r[0] === $ext)) === 0) {
+                $hyperlinks[] = [$summaryRowNum, 0, "'{$sheetName}'!A1"];
+            }
+            $summaryRows[] = [
+                $ext, $date,
                 $d['first_login'],
                 $d['last_logout'],
                 $d['online_sec'] > 0 ? secsToHms($d['online_sec']) : '',
                 $d['login_count'],
                 $d['logout_count'],
             ];
+            foreach ($d['sessions'] as $sess) {
+                $detailRows[] = [
+                    $date,
+                    $sess['login'],
+                    $sess['logout'],
+                    secsToHms($sess['duration']),
+                ];
+            }
         }
+
+        $sheets[] = [
+            'name' => $sheetName,
+            'xml'  => xlsxBuildSheet($detailHeaders, $detailRows, [[2, 0, 'Summary!A1']]),
+        ];
     }
-    streamXlsx($headers, $rows, "attendance_{$from}_to_{$to}.xlsx");
+
+    $sheets[0]['xml'] = xlsxBuildSheet($summaryHeaders, $summaryRows, $hyperlinks);
+    streamMultiSheetXlsx($sheets, "attendance_{$from}_to_{$to}.xlsx");
 }
 
 /**

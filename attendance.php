@@ -43,7 +43,7 @@ $attendanceData = computeAttendanceData($dailyAgentEvents);
 ksort($attendanceData);
 
 if ($format === 'excel') {
-    streamExcelAttendance($attendanceData, $from, $to);
+    streamExcelAttendance($dailyAgentEvents, $from, $to);
     exit;
 }
 
