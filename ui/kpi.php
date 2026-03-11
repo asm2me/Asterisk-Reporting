@@ -281,8 +281,8 @@ use function fmtTime;
           <th>Avg Wait Time</th>
           <th>Avg Talk Time</th>
           <th>Total Talk Time</th>
-          <th>First Login</th>
-          <th>Last Logout</th>
+          <th>Logins</th>
+          <th>Logouts</th>
           <th>Online Time</th>
           <th>Pauses</th>
           <th>Pause Time</th>
@@ -310,8 +310,8 @@ use function fmtTime;
             elseif ($answerRate >= 60) $rateBadge = 'medium';
 
             $ae = $agentEvents[$ext['extension']] ?? [];
-            $firstLogin  = $ae['first_login'] ?? '';
-            $lastLogout  = $ae['last_logout'] ?? '';
+            $loginCount  = (int)($ae['login_count'] ?? 0);
+            $logoutCount = (int)($ae['logout_count'] ?? 0);
             $onlineSec   = (int)($ae['online_sec'] ?? 0);
             $pauseCount  = (int)($ae['pause_count'] ?? 0);
             $pauseSec    = (int)($ae['total_pause_sec'] ?? 0);
@@ -345,8 +345,8 @@ use function fmtTime;
               <td data-label="Avg Wait Time"><span class="num"><?= (int)$avgWait ?></span> sec</td>
               <td data-label="Avg Talk Time"><span class="num"><?= (int)$avgTalk ?></span> sec</td>
               <td data-label="Total Talk Time"><?= h(fmtTime($totalBillsec)) ?></td>
-              <td data-label="First Login"><?= $firstLogin ? h(substr($firstLogin, 11, 8)) : '<span style="color:var(--muted)">—</span>' ?></td>
-              <td data-label="Last Logout"><?= $lastLogout ? h(substr($lastLogout, 11, 8)) : '<span style="color:var(--muted)">—</span>' ?></td>
+              <td data-label="Logins"><span class="num" style="color:var(--ok)"><?= $loginCount ?></span></td>
+              <td data-label="Logouts"><span class="num" style="color:var(--bad)"><?= $logoutCount ?></span></td>
               <td data-label="Online Time" style="color:var(--accent)"><?= $onlineSec > 0 ? h(fmtTime($onlineSec)) : '<span style="color:var(--muted)">—</span>' ?></td>
               <td data-label="Pauses"><span class="num" style="color:var(--warn)"><?= $pauseCount ?></span></td>
               <td data-label="Pause Time" style="color:var(--warn)"><?= $pauseSec > 0 ? h(fmtTime($pauseSec)) : '<span style="color:var(--muted)">—</span>' ?></td>

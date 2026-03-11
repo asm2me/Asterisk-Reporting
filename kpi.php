@@ -111,6 +111,8 @@ $totalMissed = 0;
 $totalAbandoned = 0;
 $totalBusy = 0;
 $totalBillsec = 0;
+$totalLoginCount = 0;
+$totalLogoutCount = 0;
 $totalPauseCount = 0;
 $totalPauseSec = 0;
 $totalOnlineSec = 0;
@@ -123,6 +125,8 @@ foreach ($kpiData as $ext) {
     $totalBusy += (int)($ext['busy'] ?? 0);
     $totalBillsec += (int)($ext['total_billsec'] ?? 0);
     $ae = $agentEvents[$ext['extension']] ?? [];
+    $totalLoginCount += (int)($ae['login_count'] ?? 0);
+    $totalLogoutCount += (int)($ae['logout_count'] ?? 0);
     $totalPauseCount += (int)($ae['pause_count'] ?? 0);
     $totalPauseSec += (int)($ae['total_pause_sec'] ?? 0);
     $totalOnlineSec += (int)($ae['online_sec'] ?? 0);

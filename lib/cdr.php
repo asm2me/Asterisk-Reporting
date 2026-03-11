@@ -1229,7 +1229,7 @@ function streamExcel(array $CONFIG, PDO $pdo, array $me, array $filters): void {
 function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, array $dailyAgentEvents, string $from, string $to): void {
     $headers = ['Extension','Total Calls','Answered','Missed','Abandoned','Busy','Failed',
                 'Answer Rate %','Avg Wait (sec)','Avg Talk (sec)','Total Talk Time',
-                'First Login','Last Logout','Online Time','Pauses','Pause Time',
+                'Logins','Logouts','Online Time','Pauses','Pause Time',
                 'Break Reason','Break Start','Break Stop','Break Duration'];
     $rows = [];
     foreach ($kpiData as $ext) {
@@ -1249,8 +1249,8 @@ function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, a
             (int)($ext['avg_wait_time']   ?? 0),
             (int)($ext['avg_talk_time']   ?? 0),
             secsToHms((int)($ext['total_billsec'] ?? 0)),
-            (string)($ae['first_login']   ?? ''),
-            (string)($ae['last_logout']   ?? ''),
+            (int)($ae['login_count']      ?? 0),
+            (int)($ae['logout_count']     ?? 0),
             secsToHms((int)($ae['online_sec'] ?? 0)),
             (int)($ae['pause_count']      ?? 0),
             secsToHms((int)($ae['total_pause_sec'] ?? 0)),
