@@ -101,7 +101,11 @@ use function fmtTime;
 
   .daily-row td{background:rgba(122,162,255,.04);font-size:12px;padding:8px 12px !important;}
   .daily-row td:first-child{padding-left:40px !important;}
-  .event-tag{display:inline-flex;align-items:center;gap:3px;font-size:11px;padding:2px 6px;border-radius:4px;background:rgba(255,255,255,.04);border:1px solid var(--line);white-space:nowrap;}
+  .events-table{width:auto;min-width:320px;max-width:600px;border-collapse:collapse;margin:6px 0;border:1px solid var(--line);border-radius:8px;overflow:hidden;}
+  .events-table thead th{background:rgba(15,26,48,.8);font-size:11px;color:var(--muted);text-align:left;padding:6px 10px;border-bottom:1px solid var(--line);white-space:nowrap;position:static;}
+  .events-table tbody td{padding:5px 10px;font-size:12px;border-bottom:1px solid rgba(255,255,255,.04);white-space:nowrap;}
+  .events-table tbody tr:last-child td{border-bottom:none;}
+  .events-table tbody tr:hover{background:rgba(255,255,255,.03);}
 
   /* Multi-select extension dropdown */
   .multiselect-wrap{position:relative;}
@@ -374,27 +378,42 @@ use function fmtTime;
                 <td data-label="Avg Wait Time"><span class="num"><?= $dAvgW ?></span> sec</td>
                 <td data-label="Avg Talk Time"><span class="num"><?= $dAvgT ?></span> sec</td>
                 <td data-label="Total Talk Time"><?= h(fmtTime($dBill)) ?></td>
-                <td colspan="5" style="padding:4px 8px !important;">
-                  <?php if (!empty($dayEvents)): ?>
-                    <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                <td colspan="5"></td>
+              </tr>
+              <?php if (!empty($dayEvents)): ?>
+              <tr class="daily-row <?= h($dayRowId) ?>" style="display:none;">
+                <td></td>
+                <td colspan="16" style="padding:0 8px 8px 24px !important;">
+                  <table class="events-table">
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>Event</th>
+                        <th>Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody>
                       <?php foreach ($dayEvents as $ev):
                         $evType = $ev['type'];
                         $evTime = $ev['time'];
                         $evReason = $ev['reason'];
                         if ($evType === 'LOGIN')       { $evIcon = '🟢'; $evColor = 'var(--ok)'; $evLabel = 'Login'; }
                         elseif ($evType === 'LOGOUT')  { $evIcon = '🔴'; $evColor = 'var(--bad)'; $evLabel = 'Logout'; }
-                        elseif ($evType === 'PAUSE')   { $evIcon = '⏸️'; $evColor = 'var(--warn)'; $evLabel = 'Pause'; }
-                        elseif ($evType === 'UNPAUSE') { $evIcon = '▶️'; $evColor = 'var(--accent)'; $evLabel = 'Unpause'; }
+                        elseif ($evType === 'PAUSE')   { $evIcon = '⏸️'; $evColor = 'var(--warn)'; $evLabel = 'Break'; }
+                        elseif ($evType === 'UNPAUSE') { $evIcon = '▶️'; $evColor = 'var(--accent)'; $evLabel = 'Resume'; }
                         else { $evIcon = '⚪'; $evColor = 'var(--muted)'; $evLabel = $evType; }
                       ?>
-                        <span class="event-tag" style="color:<?= $evColor ?>;" title="<?= h($evLabel . ($evReason ? ': ' . $evReason : '')) ?>">
-                          <?= $evIcon ?> <?= h($evTime) ?><?php if ($evReason): ?> <span style="color:var(--muted);font-size:10px;">(<?= h($evReason) ?>)</span><?php endif; ?>
-                        </span>
+                        <tr>
+                          <td style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;"><?= h($evTime) ?></td>
+                          <td><span style="color:<?= $evColor ?>;"><?= $evIcon ?> <?= h($evLabel) ?></span></td>
+                          <td style="color:var(--muted);"><?= $evReason ? h($evReason) : '—' ?></td>
+                        </tr>
                       <?php endforeach; ?>
-                    </div>
-                  <?php endif; ?>
+                    </tbody>
+                  </table>
                 </td>
               </tr>
+              <?php endif; ?>
             <?php endforeach; endif; ?>
           <?php endforeach; ?>
         <?php endif; ?>
