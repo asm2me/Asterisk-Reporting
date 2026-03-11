@@ -106,6 +106,7 @@ use function fmtTime;
   .events-table tbody td{padding:5px 10px;font-size:12px;border-bottom:1px solid rgba(255,255,255,.04);white-space:nowrap;}
   .events-table tbody tr:last-child td{border-bottom:none;}
   .events-table tbody tr:hover{background:rgba(255,255,255,.03);}
+  .mono-cell{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
 
   /* Multi-select extension dropdown */
   .multiselect-wrap{position:relative;}
@@ -364,6 +365,44 @@ use function fmtTime;
               $dAvgW  = $day ? (int)($day['avg_wait_time'] ?? 0) : 0;
               $dAvgT  = $day ? (int)($day['avg_talk_time'] ?? 0) : 0;
               $dBill  = $day ? (int)($day['total_billsec'] ?? 0) : 0;
+
+              // Summarize agent events: first login, last logout, paired breaks
+              $dayFirstLogin = '';
+              $dayLastLogout = '';
+              $dayBreaks = [];
+              $openPause = null;
+              foreach ($dayEvents as $ev) {
+                  if ($ev['type'] === 'LOGIN' && $dayFirstLogin === '') $dayFirstLogin = $ev['time'];
+                  if ($ev['type'] === 'LOGOUT') $dayLastLogout = $ev['time'];
+                  if ($ev['type'] === 'PAUSE') {
+                      $openPause = ['start' => $ev['time'], 'reason' => $ev['reason']];
+                  }
+                  if ($ev['type'] === 'UNPAUSE') {
+                      if ($openPause !== null) {
+                          $pStart = strtotime($date . ' ' . $openPause['start']);
+                          $pEnd   = strtotime($date . ' ' . $ev['time']);
+                          $dayBreaks[] = [
+                              'start'    => $openPause['start'],
+                              'stop'     => $ev['time'],
+                              'duration' => max(0, $pEnd - $pStart),
+                              'reason'   => $openPause['reason'],
+                          ];
+                          $openPause = null;
+                      }
+                  }
+              }
+              // If pause still open at end of day
+              if ($openPause !== null) {
+                  $pStart = strtotime($date . ' ' . $openPause['start']);
+                  $pEnd   = ($date === date('Y-m-d')) ? time() : strtotime($date . ' 23:59:59');
+                  $dayBreaks[] = [
+                      'start'    => $openPause['start'],
+                      'stop'     => '—',
+                      'duration' => max(0, $pEnd - $pStart),
+                      'reason'   => $openPause['reason'],
+                  ];
+              }
+              $hasAgentInfo = ($dayFirstLogin !== '' || $dayLastLogout !== '' || !empty($dayBreaks));
             ?>
               <tr class="daily-row <?= h($dayRowId) ?>" style="display:none;">
                 <td></td>
@@ -378,35 +417,30 @@ use function fmtTime;
                 <td data-label="Avg Wait Time"><span class="num"><?= $dAvgW ?></span> sec</td>
                 <td data-label="Avg Talk Time"><span class="num"><?= $dAvgT ?></span> sec</td>
                 <td data-label="Total Talk Time"><?= h(fmtTime($dBill)) ?></td>
-                <td colspan="5"></td>
+                <td data-label="First Login" style="color:var(--ok);"><?= $dayFirstLogin ? '🟢 ' . h($dayFirstLogin) : '<span style="color:var(--muted)">—</span>' ?></td>
+                <td data-label="Last Logout" style="color:var(--bad);"><?= $dayLastLogout ? '🔴 ' . h($dayLastLogout) : '<span style="color:var(--muted)">—</span>' ?></td>
+                <td colspan="3"></td>
               </tr>
-              <?php if (!empty($dayEvents)): ?>
+              <?php if (!empty($dayBreaks)): ?>
               <tr class="daily-row <?= h($dayRowId) ?>" style="display:none;">
                 <td></td>
                 <td colspan="16" style="padding:0 8px 8px 24px !important;">
                   <table class="events-table">
                     <thead>
                       <tr>
-                        <th>Time</th>
-                        <th>Event</th>
-                        <th>Reason</th>
+                        <th>Break Reason</th>
+                        <th>Start</th>
+                        <th>Stop</th>
+                        <th>Duration</th>
                       </tr>
                     </thead>
                     <tbody>
-                      <?php foreach ($dayEvents as $ev):
-                        $evType = $ev['type'];
-                        $evTime = $ev['time'];
-                        $evReason = $ev['reason'];
-                        if ($evType === 'LOGIN')       { $evIcon = '🟢'; $evColor = 'var(--ok)'; $evLabel = 'Login'; }
-                        elseif ($evType === 'LOGOUT')  { $evIcon = '🔴'; $evColor = 'var(--bad)'; $evLabel = 'Logout'; }
-                        elseif ($evType === 'PAUSE')   { $evIcon = '⏸️'; $evColor = 'var(--warn)'; $evLabel = 'Break'; }
-                        elseif ($evType === 'UNPAUSE') { $evIcon = '▶️'; $evColor = 'var(--accent)'; $evLabel = 'Resume'; }
-                        else { $evIcon = '⚪'; $evColor = 'var(--muted)'; $evLabel = $evType; }
-                      ?>
+                      <?php foreach ($dayBreaks as $brk): ?>
                         <tr>
-                          <td style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;"><?= h($evTime) ?></td>
-                          <td><span style="color:<?= $evColor ?>;"><?= $evIcon ?> <?= h($evLabel) ?></span></td>
-                          <td style="color:var(--muted);"><?= $evReason ? h($evReason) : '—' ?></td>
+                          <td style="color:var(--warn);">⏸️ <?= $brk['reason'] ? h($brk['reason']) : '<span style="color:var(--muted)">No reason</span>' ?></td>
+                          <td class="mono-cell"><?= h($brk['start']) ?></td>
+                          <td class="mono-cell"><?= h($brk['stop']) ?></td>
+                          <td style="color:var(--accent);"><?= h(fmtTime($brk['duration'])) ?></td>
                         </tr>
                       <?php endforeach; ?>
                     </tbody>

@@ -1228,9 +1228,9 @@ function streamExcel(array $CONFIG, PDO $pdo, array $me, array $filters): void {
  */
 function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, array $dailyAgentEvents, string $from, string $to): void {
     $headers = ['Extension','Total Calls','Answered','Missed','Abandoned','Busy','Failed',
-                'Answer Rate %','Avg Wait (sec)','Avg Talk (sec)','Total Talk (sec)',
-                'First Login','Last Logout','Online Time (sec)','Pauses','Pause Time (sec)',
-                'Agent Events'];
+                'Answer Rate %','Avg Wait (sec)','Avg Talk (sec)','Total Talk Time',
+                'First Login','Last Logout','Online Time','Pauses','Pause Time',
+                'Break Reason','Break Start','Break Stop','Break Duration'];
     $rows = [];
     foreach ($kpiData as $ext) {
         $total  = (int)($ext['total_calls'] ?? 0);
@@ -1248,13 +1248,13 @@ function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, a
             $rate,
             (int)($ext['avg_wait_time']   ?? 0),
             (int)($ext['avg_talk_time']   ?? 0),
-            (int)($ext['total_billsec']   ?? 0),
+            secsToHms((int)($ext['total_billsec'] ?? 0)),
             (string)($ae['first_login']   ?? ''),
             (string)($ae['last_logout']   ?? ''),
-            (int)($ae['online_sec']       ?? 0),
+            secsToHms((int)($ae['online_sec'] ?? 0)),
             (int)($ae['pause_count']      ?? 0),
-            (int)($ae['total_pause_sec']  ?? 0),
-            '',
+            secsToHms((int)($ae['total_pause_sec'] ?? 0)),
+            '', '', '', '',
         ];
         // Append daily detail rows for this extension (expanded)
         $extDays = $dailyData[$ext['extension']] ?? [];
@@ -1267,13 +1267,45 @@ function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, a
             $dTotal = $day ? (int)($day['total_calls'] ?? 0) : 0;
             $dAns   = $day ? (int)($day['answered'] ?? 0) : 0;
             $dRate  = $dTotal > 0 ? round(($dAns / $dTotal) * 100, 1) : 0.0;
-            // Build agent events summary string
-            $evParts = [];
+
+            // Compute first login, last logout, paired breaks for this day
+            $dayFirstLogin = '';
+            $dayLastLogout = '';
+            $dayBreaks = [];
+            $openPause = null;
             foreach ($dayEvts as $ev) {
-                $s = $ev['type'] . ' ' . $ev['time'];
-                if (!empty($ev['reason'])) $s .= ' (' . $ev['reason'] . ')';
-                $evParts[] = $s;
+                if ($ev['type'] === 'LOGIN' && $dayFirstLogin === '') $dayFirstLogin = $ev['time'];
+                if ($ev['type'] === 'LOGOUT') $dayLastLogout = $ev['time'];
+                if ($ev['type'] === 'PAUSE') {
+                    $openPause = ['start' => $ev['time'], 'reason' => $ev['reason']];
+                }
+                if ($ev['type'] === 'UNPAUSE') {
+                    if ($openPause !== null) {
+                        $pStart = strtotime($date . ' ' . $openPause['start']);
+                        $pEnd   = strtotime($date . ' ' . $ev['time']);
+                        $dayBreaks[] = [
+                            'start'    => $openPause['start'],
+                            'stop'     => $ev['time'],
+                            'duration' => max(0, $pEnd - $pStart),
+                            'reason'   => $openPause['reason'],
+                        ];
+                        $openPause = null;
+                    }
+                }
             }
+            if ($openPause !== null) {
+                $pStart = strtotime($date . ' ' . $openPause['start']);
+                $pEnd   = ($date === date('Y-m-d')) ? time() : strtotime($date . ' 23:59:59');
+                $dayBreaks[] = [
+                    'start'    => $openPause['start'],
+                    'stop'     => '',
+                    'duration' => max(0, $pEnd - $pStart),
+                    'reason'   => $openPause['reason'],
+                ];
+            }
+
+            // First row for the day: call stats + first login/last logout + first break (if any)
+            $firstBreak = $dayBreaks[0] ?? null;
             $rows[] = [
                 '  ' . (string)$date,
                 $dTotal,
@@ -1285,10 +1317,26 @@ function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, a
                 $dRate,
                 $day ? (int)($day['avg_wait_time'] ?? 0) : 0,
                 $day ? (int)($day['avg_talk_time'] ?? 0) : 0,
-                $day ? (int)($day['total_billsec'] ?? 0) : 0,
-                '', '', 0, 0, 0,
-                implode(' | ', $evParts),
+                $day ? secsToHms((int)($day['total_billsec'] ?? 0)) : '00:00:00',
+                $dayFirstLogin,
+                $dayLastLogout,
+                '', 0, '',
+                $firstBreak ? (string)($firstBreak['reason'] ?? '') : '',
+                $firstBreak ? $firstBreak['start'] : '',
+                $firstBreak ? $firstBreak['stop'] : '',
+                $firstBreak ? secsToHms($firstBreak['duration']) : '',
             ];
+            // Additional break rows (2nd, 3rd, ...)
+            for ($bi = 1; $bi < count($dayBreaks); $bi++) {
+                $brk = $dayBreaks[$bi];
+                $rows[] = [
+                    '', 0, 0, 0, 0, 0, 0, 0.0, 0, 0, '', '', '', '', 0, '',
+                    (string)($brk['reason'] ?? ''),
+                    $brk['start'],
+                    $brk['stop'],
+                    secsToHms($brk['duration']),
+                ];
+            }
         }
     }
     streamXlsx($headers, $rows, "kpi_{$from}_to_{$to}.xlsx");
