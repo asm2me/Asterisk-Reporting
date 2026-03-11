@@ -1224,21 +1224,187 @@ function streamExcel(array $CONFIG, PDO $pdo, array $me, array $filters): void {
 }
 
 /**
- * Export KPI data array as XLSX.
+ * Build a worksheet XML string from headers and rows.
+ * Supports an optional $hyperlinks array: [ [row, col, target], ... ]
+ * where target is like "Ext_1001!A1" for internal sheet links.
+ */
+function xlsxBuildSheet(array $headers, array $rows, array $hyperlinks = []): string {
+    $ws  = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+    $ws .= '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"';
+    $ws .= ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">';
+    $ws .= '<sheetData>';
+    // Header row (bold = style 1)
+    $ws .= '<row r="1">';
+    foreach ($headers as $ci => $h) {
+        $col = xlsxCol($ci);
+        $esc = htmlspecialchars((string)$h, ENT_XML1, 'UTF-8');
+        $ws .= "<c r=\"{$col}1\" t=\"inlineStr\" s=\"1\"><is><t>{$esc}</t></is></c>";
+    }
+    $ws .= '</row>';
+    $rowNum = 2;
+    // Build a lookup of hyperlink cells for styling (style 2 = blue underline)
+    $hlCells = [];
+    foreach ($hyperlinks as $hl) {
+        $hlCells[$hl[0] . ':' . $hl[1]] = true;
+    }
+    foreach ($rows as $row) {
+        $ws .= "<row r=\"{$rowNum}\">";
+        foreach (array_values($row) as $ci => $val) {
+            $col = xlsxCol($ci);
+            $isHl = isset($hlCells[$rowNum . ':' . $ci]);
+            $style = $isHl ? ' s="2"' : '';
+            if (is_int($val) || is_float($val)) {
+                $ws .= "<c r=\"{$col}{$rowNum}\"{$style}><v>{$val}</v></c>";
+            } else {
+                $esc = htmlspecialchars((string)($val ?? ''), ENT_XML1, 'UTF-8');
+                $ws .= "<c r=\"{$col}{$rowNum}\" t=\"inlineStr\"{$style}><is><t>{$esc}</t></is></c>";
+            }
+        }
+        $ws .= '</row>';
+        $rowNum++;
+    }
+    $ws .= '</sheetData>';
+    // Hyperlinks section
+    if (!empty($hyperlinks)) {
+        $ws .= '<hyperlinks>';
+        foreach ($hyperlinks as $hi => $hl) {
+            $col = xlsxCol($hl[1]);
+            $ref = $col . $hl[0];
+            $loc = htmlspecialchars($hl[2], ENT_XML1, 'UTF-8');
+            $ws .= "<hyperlink ref=\"{$ref}\" location=\"{$loc}\" display=\"{$loc}\"/>";
+        }
+        $ws .= '</hyperlinks>';
+    }
+    $ws .= '</worksheet>';
+    return $ws;
+}
+
+/**
+ * Build and stream a multi-sheet XLSX workbook.
+ * $sheets: [ ['name' => 'Sheet1', 'xml' => '<worksheet ...>'], ... ]
+ */
+function streamMultiSheetXlsx(array $sheets, string $filename): void {
+    $files = [];
+    $numSheets = count($sheets);
+
+    // Content Types
+    $ct = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+    $ct .= '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">';
+    $ct .= '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>';
+    $ct .= '<Default Extension="xml"  ContentType="application/xml"/>';
+    $ct .= '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>';
+    for ($i = 1; $i <= $numSheets; $i++) {
+        $ct .= "<Override PartName=\"/xl/worksheets/sheet{$i}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>";
+    }
+    $ct .= '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>';
+    $ct .= '</Types>';
+    $files['[Content_Types].xml'] = $ct;
+
+    // Root rels
+    $files['_rels/.rels'] =
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'.
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'.
+        '</Relationships>';
+
+    // Workbook with sheet references
+    $wb = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+    $wb .= '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"';
+    $wb .= ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">';
+    $wb .= '<sheets>';
+    foreach ($sheets as $si => $sheet) {
+        $idx = $si + 1;
+        $sName = htmlspecialchars($sheet['name'], ENT_XML1, 'UTF-8');
+        $wb .= "<sheet name=\"{$sName}\" sheetId=\"{$idx}\" r:id=\"rId{$idx}\"/>";
+    }
+    $wb .= '</sheets></workbook>';
+    $files['xl/workbook.xml'] = $wb;
+
+    // Workbook rels
+    $wbRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+    $wbRels .= '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">';
+    foreach ($sheets as $si => $sheet) {
+        $idx = $si + 1;
+        $wbRels .= "<Relationship Id=\"rId{$idx}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet{$idx}.xml\"/>";
+    }
+    $stylesId = $numSheets + 1;
+    $wbRels .= "<Relationship Id=\"rId{$stylesId}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>";
+    $wbRels .= '</Relationships>';
+    $files['xl/_rels/workbook.xml.rels'] = $wbRels;
+
+    // Styles (with hyperlink style: blue + underline = style index 2)
+    $files['xl/styles.xml'] =
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
+        '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'.
+        '<fonts count="3">'.
+          '<font><sz val="11"/><name val="Calibri"/></font>'.
+          '<font><b/><sz val="11"/><name val="Calibri"/></font>'.
+          '<font><u/><sz val="11"/><color rgb="FF0563C1"/><name val="Calibri"/></font>'.
+        '</fonts>'.
+        '<fills count="2">'.
+          '<fill><patternFill patternType="none"/></fill>'.
+          '<fill><patternFill patternType="gray125"/></fill>'.
+        '</fills>'.
+        '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'.
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'.
+        '<cellXfs count="3">'.
+          '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'.
+          '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'.
+          '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>'.
+        '</cellXfs>'.
+        '</styleSheet>';
+
+    // Sheet XML files
+    foreach ($sheets as $si => $sheet) {
+        $idx = $si + 1;
+        $files["xl/worksheets/sheet{$idx}.xml"] = $sheet['xml'];
+    }
+
+    $zip = xlsxBuildZip($files);
+    header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    header('Content-Disposition: attachment; filename="' . rawurlencode($filename) . '"');
+    header('Content-Length: ' . strlen($zip));
+    echo $zip;
+    exit;
+}
+
+/**
+ * Export KPI data as multi-sheet XLSX: Summary sheet with clickable links to per-extension detail sheets.
  */
 function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, array $dailyAgentEvents, string $from, string $to): void {
-    $headers = ['Extension','Total Calls','Answered','Missed','Abandoned','Busy','Failed',
-                'Answer Rate %','Avg Wait (sec)','Avg Talk (sec)','Total Talk Time',
-                'Logins','Logouts','Online Time','Pauses','Pause Time',
-                'Break Reason','Break Start','Break Stop','Break Duration'];
-    $rows = [];
+    $summaryHeaders = ['Extension','Total Calls','Answered','Missed','Abandoned','Busy','Failed',
+                       'Answer Rate %','Avg Wait (sec)','Avg Talk (sec)','Total Talk Time',
+                       'Logins','Logouts','Online Time','Pauses','Pause Time'];
+    $detailHeaders = ['Date','Total Calls','Answered','Missed','Abandoned','Busy','Failed',
+                      'Answer Rate %','Avg Wait (sec)','Avg Talk (sec)','Total Talk Time',
+                      'First Login','Last Logout','Online Time','Pauses','Pause Time',
+                      'Break Reason','Break Start','Break Stop','Break Duration'];
+
+    $summaryRows = [];
+    $hyperlinks = [];  // [row, col, target]
+    $sheets = [];      // [{name, xml}, ...]
+    // Reserve slot 0 for summary sheet
+    $sheets[] = ['name' => 'Summary', 'xml' => ''];
+
     foreach ($kpiData as $ext) {
-        $total  = (int)($ext['total_calls'] ?? 0);
-        $ans    = (int)($ext['answered']    ?? 0);
-        $rate   = $total > 0 ? round(($ans / $total) * 100, 1) : 0.0;
-        $ae     = $agentEvents[$ext['extension']] ?? [];
-        $rows[] = [
-            (string)($ext['extension']    ?? ''),
+        $extName = (string)($ext['extension'] ?? '');
+        $total   = (int)($ext['total_calls'] ?? 0);
+        $ans     = (int)($ext['answered']    ?? 0);
+        $rate    = $total > 0 ? round(($ans / $total) * 100, 1) : 0.0;
+        $ae      = $agentEvents[$extName] ?? [];
+
+        // Summary row number (1-based, +1 for header)
+        $summaryRowNum = count($summaryRows) + 2;
+
+        // Sheet name for this extension (max 31 chars for Excel)
+        $sheetName = 'Ext_' . $extName;
+        if (strlen($sheetName) > 31) $sheetName = substr($sheetName, 0, 31);
+
+        // Add hyperlink: col 0 (Extension), pointing to the detail sheet
+        $hyperlinks[] = [$summaryRowNum, 0, "'{$sheetName}'!A1"];
+
+        $summaryRows[] = [
+            $extName,
             $total,
             $ans,
             (int)($ext['missed']          ?? 0),
@@ -1254,13 +1420,15 @@ function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, a
             secsToHms((int)($ae['online_sec'] ?? 0)),
             (int)($ae['pause_count']      ?? 0),
             secsToHms((int)($ae['total_pause_sec'] ?? 0)),
-            '', '', '', '',
         ];
-        // Append daily detail rows for this extension (expanded)
-        $extDays = $dailyData[$ext['extension']] ?? [];
-        $extEvents = $dailyAgentEvents[$ext['extension']] ?? [];
+
+        // Build detail rows for this extension
+        $detailRows = [];
+        $extDays = $dailyData[$extName] ?? [];
+        $extEvents = $dailyAgentEvents[$extName] ?? [];
         $allDates = array_unique(array_merge(array_keys($extDays), array_keys($extEvents)));
         sort($allDates);
+
         foreach ($allDates as $date) {
             $day = $extDays[$date] ?? null;
             $dayEvts = $extEvents[$date] ?? [];
@@ -1268,7 +1436,7 @@ function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, a
             $dAns   = $day ? (int)($day['answered'] ?? 0) : 0;
             $dRate  = $dTotal > 0 ? round(($dAns / $dTotal) * 100, 1) : 0.0;
 
-            // Compute first login, last logout, paired breaks for this day
+            // Compute first login, last logout, paired breaks
             $dayFirstLogin = '';
             $dayLastLogout = '';
             $dayBreaks = [];
@@ -1304,7 +1472,7 @@ function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, a
                 ];
             }
 
-            // Calculate per-day online time and pause totals
+            // Per-day online time and pause totals
             $dayOnlineSec = 0;
             if ($dayFirstLogin !== '' && $dayLastLogout !== '') {
                 $loginTs  = strtotime($date . ' ' . $dayFirstLogin);
@@ -1317,10 +1485,10 @@ function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, a
                 $dayPauseSec += (int)$brk['duration'];
             }
 
-            // First row for the day: call stats + first login/last logout + first break (if any)
+            // Day row with first break
             $firstBreak = $dayBreaks[0] ?? null;
-            $rows[] = [
-                '  ' . (string)$date,
+            $detailRows[] = [
+                (string)$date,
                 $dTotal,
                 $dAns,
                 $day ? (int)($day['missed']    ?? 0) : 0,
@@ -1341,10 +1509,10 @@ function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, a
                 $firstBreak ? $firstBreak['stop'] : '',
                 $firstBreak ? secsToHms($firstBreak['duration']) : '',
             ];
-            // Additional break rows (2nd, 3rd, ...)
+            // Additional break rows
             for ($bi = 1; $bi < count($dayBreaks); $bi++) {
                 $brk = $dayBreaks[$bi];
-                $rows[] = [
+                $detailRows[] = [
                     '', 0, 0, 0, 0, 0, 0, 0.0, 0, 0, '', '', '', '', 0, '',
                     (string)($brk['reason'] ?? ''),
                     $brk['start'],
@@ -1353,7 +1521,20 @@ function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, a
                 ];
             }
         }
+
+        // Build detail sheet with a "Back to Summary" hyperlink
+        $backLink = [2, 0, 'Summary!A1'];
+        $detailSheetRows = [['<< Back to Summary', '', '', '', '', '', '', 0.0, 0, 0, '', '', '', '', 0, '', '', '', '', '']];
+        $detailSheetRows = array_merge($detailSheetRows, $detailRows);
+        $sheets[] = [
+            'name' => $sheetName,
+            'xml'  => xlsxBuildSheet($detailHeaders, $detailSheetRows, [$backLink]),
+        ];
     }
-    streamXlsx($headers, $rows, "kpi_{$from}_to_{$to}.xlsx");
+
+    // Build summary sheet with hyperlinks
+    $sheets[0]['xml'] = xlsxBuildSheet($summaryHeaders, $summaryRows, $hyperlinks);
+
+    streamMultiSheetXlsx($sheets, "kpi_{$from}_to_{$to}.xlsx");
 }
 
