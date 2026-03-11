@@ -1370,171 +1370,196 @@ function streamMultiSheetXlsx(array $sheets, string $filename): void {
 
 /**
  * Export KPI data as multi-sheet XLSX: Summary sheet with clickable links to per-extension detail sheets.
+ * Detail sheets contain daily call stats only (no login/logout/breaks — see Attendance and Breaks reports).
  */
-function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, array $dailyAgentEvents, string $from, string $to): void {
+function streamExcelKpis(array $kpiData, array $dailyData, string $from, string $to): void {
     $summaryHeaders = ['Extension','Total Calls','Answered','Missed','Abandoned','Busy','Failed',
-                       'Answer Rate %','Avg Wait (sec)','Avg Talk (sec)','Total Talk Time',
-                       'Logins','Logouts','Online Time','Pauses','Pause Time'];
-    $detailHeaders = ['Date','Total Calls','Answered','Missed','Abandoned','Busy','Failed',
-                      'Answer Rate %','Avg Wait (sec)','Avg Talk (sec)','Total Talk Time',
-                      'First Login','Last Logout','Online Time','Pauses','Pause Time',
-                      'Break Reason','Break Start','Break Stop','Break Duration'];
+                       'Answer Rate %','Avg Wait (sec)','Avg Talk (sec)','Total Talk Time'];
+    $detailHeaders  = ['Date','Total Calls','Answered','Missed','Abandoned','Busy','Failed',
+                       'Answer Rate %','Avg Wait (sec)','Avg Talk (sec)','Total Talk Time'];
 
     $summaryRows = [];
-    $hyperlinks = [];  // [row, col, target]
-    $sheets = [];      // [{name, xml}, ...]
-    // Reserve slot 0 for summary sheet
-    $sheets[] = ['name' => 'Summary', 'xml' => ''];
+    $hyperlinks  = [];
+    $sheets      = [['name' => 'Summary', 'xml' => '']];
 
     foreach ($kpiData as $ext) {
         $extName = (string)($ext['extension'] ?? '');
         $total   = (int)($ext['total_calls'] ?? 0);
         $ans     = (int)($ext['answered']    ?? 0);
         $rate    = $total > 0 ? round(($ans / $total) * 100, 1) : 0.0;
-        $ae      = $agentEvents[$extName] ?? [];
 
-        // Summary row number (1-based, +1 for header)
-        $summaryRowNum = count($summaryRows) + 2;
-
-        // Sheet name for this extension (max 31 chars for Excel)
-        $sheetName = 'Ext_' . $extName;
+        $summaryRowNum   = count($summaryRows) + 2;
+        $sheetName       = 'Ext_' . $extName;
         if (strlen($sheetName) > 31) $sheetName = substr($sheetName, 0, 31);
-
-        // Add hyperlink: col 0 (Extension), pointing to the detail sheet
-        $hyperlinks[] = [$summaryRowNum, 0, "'{$sheetName}'!A1"];
+        $hyperlinks[]    = [$summaryRowNum, 0, "'{$sheetName}'!A1"];
 
         $summaryRows[] = [
-            $extName,
-            $total,
-            $ans,
-            (int)($ext['missed']          ?? 0),
-            (int)($ext['abandoned']       ?? 0),
-            (int)($ext['busy']            ?? 0),
-            (int)($ext['failed']          ?? 0),
+            $extName, $total, $ans,
+            (int)($ext['missed']        ?? 0),
+            (int)($ext['abandoned']     ?? 0),
+            (int)($ext['busy']          ?? 0),
+            (int)($ext['failed']        ?? 0),
             $rate,
-            (int)($ext['avg_wait_time']   ?? 0),
-            (int)($ext['avg_talk_time']   ?? 0),
+            (int)($ext['avg_wait_time'] ?? 0),
+            (int)($ext['avg_talk_time'] ?? 0),
             secsToHms((int)($ext['total_billsec'] ?? 0)),
-            (int)($ae['login_count']      ?? 0),
-            (int)($ae['logout_count']     ?? 0),
-            secsToHms((int)($ae['online_sec'] ?? 0)),
-            (int)($ae['pause_count']      ?? 0),
-            secsToHms((int)($ae['total_pause_sec'] ?? 0)),
         ];
 
-        // Build detail rows for this extension
+        // Per-extension daily call stats
         $detailRows = [];
-        $extDays = $dailyData[$extName] ?? [];
-        $extEvents = $dailyAgentEvents[$extName] ?? [];
-        $allDates = array_unique(array_merge(array_keys($extDays), array_keys($extEvents)));
-        sort($allDates);
-
-        foreach ($allDates as $date) {
-            $day = $extDays[$date] ?? null;
-            $dayEvts = $extEvents[$date] ?? [];
-            $dTotal = $day ? (int)($day['total_calls'] ?? 0) : 0;
-            $dAns   = $day ? (int)($day['answered'] ?? 0) : 0;
+        $extDays    = $dailyData[$extName] ?? [];
+        $dates      = array_keys($extDays);
+        sort($dates);
+        foreach ($dates as $date) {
+            $day    = $extDays[$date];
+            $dTotal = (int)($day['total_calls'] ?? 0);
+            $dAns   = (int)($day['answered']    ?? 0);
             $dRate  = $dTotal > 0 ? round(($dAns / $dTotal) * 100, 1) : 0.0;
+            $detailRows[] = [
+                (string)$date, $dTotal, $dAns,
+                (int)($day['missed']        ?? 0),
+                (int)($day['abandoned']     ?? 0),
+                (int)($day['busy']          ?? 0),
+                (int)($day['failed']        ?? 0),
+                $dRate,
+                (int)($day['avg_wait_time'] ?? 0),
+                (int)($day['avg_talk_time'] ?? 0),
+                secsToHms((int)($day['total_billsec'] ?? 0)),
+            ];
+        }
 
-            // Compute first login, last logout, paired breaks
-            $dayFirstLogin = '';
-            $dayLastLogout = '';
-            $dayBreaks = [];
+        $backRow = [['<< Back to Summary', '', '', '', '', '', '', 0.0, 0, 0, '']];
+        $sheets[] = [
+            'name' => $sheetName,
+            'xml'  => xlsxBuildSheet($detailHeaders, array_merge($backRow, $detailRows), [[2, 0, 'Summary!A1']]),
+        ];
+    }
+
+    $sheets[0]['xml'] = xlsxBuildSheet($summaryHeaders, $summaryRows, $hyperlinks);
+    streamMultiSheetXlsx($sheets, "kpi_{$from}_to_{$to}.xlsx");
+}
+
+/**
+ * Compute per-extension per-day attendance summary from daily agent events.
+ * Returns: [extension => [date => [first_login, last_logout, online_sec, login_count, logout_count]]]
+ */
+function computeAttendanceData(array $dailyAgentEvents): array {
+    $result = [];
+    foreach ($dailyAgentEvents as $ext => $dates) {
+        foreach ($dates as $date => $events) {
+            $firstLogin = ''; $lastLogout = ''; $loginCount = 0; $logoutCount = 0;
+            foreach ($events as $ev) {
+                if ($ev['type'] === 'LOGIN') {
+                    $loginCount++;
+                    if ($firstLogin === '') $firstLogin = $ev['time'];
+                }
+                if ($ev['type'] === 'LOGOUT') {
+                    $logoutCount++;
+                    $lastLogout = $ev['time'];
+                }
+            }
+            $onlineSec = 0;
+            if ($firstLogin !== '' && $lastLogout !== '') {
+                $onlineSec = max(0, strtotime($date . ' ' . $lastLogout) - strtotime($date . ' ' . $firstLogin));
+            }
+            $result[$ext][$date] = [
+                'first_login'  => $firstLogin,
+                'last_logout'  => $lastLogout,
+                'online_sec'   => $onlineSec,
+                'login_count'  => $loginCount,
+                'logout_count' => $logoutCount,
+            ];
+        }
+    }
+    return $result;
+}
+
+/**
+ * Compute per-extension per-day break sessions from daily agent events.
+ * Returns: [extension => [date => [[reason, start, stop, duration], ...]]]
+ */
+function computeBreaksData(array $dailyAgentEvents): array {
+    $result = [];
+    foreach ($dailyAgentEvents as $ext => $dates) {
+        foreach ($dates as $date => $events) {
             $openPause = null;
-            foreach ($dayEvts as $ev) {
-                if ($ev['type'] === 'LOGIN' && $dayFirstLogin === '') $dayFirstLogin = $ev['time'];
-                if ($ev['type'] === 'LOGOUT') $dayLastLogout = $ev['time'];
+            foreach ($events as $ev) {
                 if ($ev['type'] === 'PAUSE') {
                     $openPause = ['start' => $ev['time'], 'reason' => $ev['reason']];
-                }
-                if ($ev['type'] === 'UNPAUSE') {
-                    if ($openPause !== null) {
-                        $pStart = strtotime($date . ' ' . $openPause['start']);
-                        $pEnd   = strtotime($date . ' ' . $ev['time']);
-                        $dayBreaks[] = [
-                            'start'    => $openPause['start'],
-                            'stop'     => $ev['time'],
-                            'duration' => max(0, $pEnd - $pStart),
-                            'reason'   => $openPause['reason'],
-                        ];
-                        $openPause = null;
-                    }
+                } elseif ($ev['type'] === 'UNPAUSE' && $openPause !== null) {
+                    $pStart = strtotime($date . ' ' . $openPause['start']);
+                    $pEnd   = strtotime($date . ' ' . $ev['time']);
+                    $result[$ext][$date][] = [
+                        'reason'   => $openPause['reason'],
+                        'start'    => $openPause['start'],
+                        'stop'     => $ev['time'],
+                        'duration' => max(0, $pEnd - $pStart),
+                    ];
+                    $openPause = null;
                 }
             }
             if ($openPause !== null) {
                 $pStart = strtotime($date . ' ' . $openPause['start']);
                 $pEnd   = ($date === date('Y-m-d')) ? time() : strtotime($date . ' 23:59:59');
-                $dayBreaks[] = [
+                $result[$ext][$date][] = [
+                    'reason'   => $openPause['reason'],
                     'start'    => $openPause['start'],
                     'stop'     => '',
                     'duration' => max(0, $pEnd - $pStart),
-                    'reason'   => $openPause['reason'],
                 ];
             }
+        }
+    }
+    return $result;
+}
 
-            // Per-day online time and pause totals
-            $dayOnlineSec = 0;
-            if ($dayFirstLogin !== '' && $dayLastLogout !== '') {
-                $loginTs  = strtotime($date . ' ' . $dayFirstLogin);
-                $logoutTs = strtotime($date . ' ' . $dayLastLogout);
-                $dayOnlineSec = max(0, $logoutTs - $loginTs);
-            }
-            $dayPauseCount = count($dayBreaks);
-            $dayPauseSec = 0;
-            foreach ($dayBreaks as $brk) {
-                $dayPauseSec += (int)$brk['duration'];
-            }
-
-            // Day row with first break
-            $firstBreak = $dayBreaks[0] ?? null;
-            $detailRows[] = [
-                (string)$date,
-                $dTotal,
-                $dAns,
-                $day ? (int)($day['missed']    ?? 0) : 0,
-                $day ? (int)($day['abandoned'] ?? 0) : 0,
-                $day ? (int)($day['busy']      ?? 0) : 0,
-                $day ? (int)($day['failed']    ?? 0) : 0,
-                $dRate,
-                $day ? (int)($day['avg_wait_time'] ?? 0) : 0,
-                $day ? (int)($day['avg_talk_time'] ?? 0) : 0,
-                $day ? secsToHms((int)($day['total_billsec'] ?? 0)) : '00:00:00',
-                $dayFirstLogin,
-                $dayLastLogout,
-                $dayOnlineSec > 0 ? secsToHms($dayOnlineSec) : '',
-                $dayPauseCount,
-                $dayPauseSec > 0 ? secsToHms($dayPauseSec) : '',
-                $firstBreak ? (string)($firstBreak['reason'] ?? '') : '',
-                $firstBreak ? $firstBreak['start'] : '',
-                $firstBreak ? $firstBreak['stop'] : '',
-                $firstBreak ? secsToHms($firstBreak['duration']) : '',
+/**
+ * Export attendance data as XLSX.
+ */
+function streamExcelAttendance(array $attendanceData, string $from, string $to): void {
+    $headers = ['Extension','Date','First Login','Last Logout','Online Time','Logins','Logouts'];
+    $rows = [];
+    foreach ($attendanceData as $ext => $dates) {
+        $sortedDates = array_keys($dates);
+        sort($sortedDates);
+        foreach ($sortedDates as $date) {
+            $d = $dates[$date];
+            $rows[] = [
+                $ext,
+                $date,
+                $d['first_login'],
+                $d['last_logout'],
+                $d['online_sec'] > 0 ? secsToHms($d['online_sec']) : '',
+                $d['login_count'],
+                $d['logout_count'],
             ];
-            // Additional break rows
-            for ($bi = 1; $bi < count($dayBreaks); $bi++) {
-                $brk = $dayBreaks[$bi];
-                $detailRows[] = [
-                    '', 0, 0, 0, 0, 0, 0, 0.0, 0, 0, '', '', '', '', 0, '',
-                    (string)($brk['reason'] ?? ''),
+        }
+    }
+    streamXlsx($headers, $rows, "attendance_{$from}_to_{$to}.xlsx");
+}
+
+/**
+ * Export breaks data as XLSX.
+ */
+function streamExcelBreaks(array $breaksData, string $from, string $to): void {
+    $headers = ['Extension','Date','Break Reason','Start','Stop','Duration'];
+    $rows = [];
+    foreach ($breaksData as $ext => $dates) {
+        $sortedDates = array_keys($dates);
+        sort($sortedDates);
+        foreach ($sortedDates as $date) {
+            foreach ($dates[$date] as $brk) {
+                $rows[] = [
+                    $ext,
+                    $date,
+                    $brk['reason'],
                     $brk['start'],
                     $brk['stop'],
                     secsToHms($brk['duration']),
                 ];
             }
         }
-
-        // Build detail sheet with a "Back to Summary" hyperlink
-        $backLink = [2, 0, 'Summary!A1'];
-        $detailSheetRows = [['<< Back to Summary', '', '', '', '', '', '', 0.0, 0, 0, '', '', '', '', 0, '', '', '', '', '']];
-        $detailSheetRows = array_merge($detailSheetRows, $detailRows);
-        $sheets[] = [
-            'name' => $sheetName,
-            'xml'  => xlsxBuildSheet($detailHeaders, $detailSheetRows, [$backLink]),
-        ];
     }
-
-    // Build summary sheet with hyperlinks
-    $sheets[0]['xml'] = xlsxBuildSheet($summaryHeaders, $summaryRows, $hyperlinks);
-
-    streamMultiSheetXlsx($sheets, "kpi_{$from}_to_{$to}.xlsx");
+    streamXlsx($headers, $rows, "breaks_{$from}_to_{$to}.xlsx");
 }
 

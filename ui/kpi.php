@@ -12,14 +12,9 @@ use function fmtTime;
 /** @var int $totalCalls */
 /** @var int $totalAnswered */
 /** @var int $totalMissed */
+/** @var int $totalAbandoned */
 /** @var int $totalBusy */
 /** @var int $totalBillsec */
-/** @var array $agentEvents */
-/** @var int $totalPauseCount */
-/** @var int $totalPauseSec */
-/** @var int $totalOnlineSec */
-/** @var array $dailyData */
-/** @var array $dailyAgentEvents */
 /** @var array $selectedExts */
 ?>
 <!doctype html>
@@ -64,7 +59,6 @@ use function fmtTime;
   @media(min-width:520px){.grid{grid-template-columns:repeat(2, minmax(0,1fr));}}
   @media(min-width:900px){.grid{grid-template-columns:repeat(3, minmax(0,1fr));}}
   @media(min-width:1100px){.grid{grid-template-columns:repeat(4, minmax(0,1fr));}}
-  @media(min-width:1400px){.grid{grid-template-columns:repeat(5, minmax(0,1fr));}}
 
   .filters{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:12px;}
   @media(min-width:520px){.filters{grid-template-columns:repeat(2, minmax(0,1fr));}}
@@ -92,22 +86,6 @@ use function fmtTime;
 
   .num{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:600;}
 
-  /* Expandable details */
-  .expand-toggle{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;cursor:pointer;
-                 background:rgba(122,162,255,.12);border:1px solid rgba(122,162,255,.25);border-radius:6px;user-select:none;}
-  .expand-toggle:hover{background:rgba(122,162,255,.20)}
-  .expand-icon{font-weight:bold;font-size:16px;line-height:1;transition:transform 0.2s;}
-  .expand-toggle.expanded .expand-icon{transform:rotate(45deg);}
-
-  .daily-row td{background:rgba(122,162,255,.04);font-size:12px;padding:8px 12px !important;}
-  .daily-row td:first-child{padding-left:40px !important;}
-  .events-table{width:auto;min-width:320px;max-width:600px;border-collapse:collapse;margin:6px 0;border:1px solid var(--line);border-radius:8px;overflow:hidden;}
-  .events-table thead th{background:rgba(15,26,48,.8);font-size:11px;color:var(--muted);text-align:left;padding:6px 10px;border-bottom:1px solid var(--line);white-space:nowrap;position:static;}
-  .events-table tbody td{padding:5px 10px;font-size:12px;border-bottom:1px solid rgba(255,255,255,.04);white-space:nowrap;}
-  .events-table tbody tr:last-child td{border-bottom:none;}
-  .events-table tbody tr:hover{background:rgba(255,255,255,.03);}
-  .mono-cell{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
-
   /* Multi-select extension dropdown */
   .multiselect-wrap{position:relative;}
   .multiselect-btn{width:100%;background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:10px;font-size:13px;outline:none;cursor:pointer;text-align:left;display:flex;justify-content:space-between;align-items:center;}
@@ -121,8 +99,7 @@ use function fmtTime;
 
   @media (max-width: 900px){
     thead{display:none;}
-    tbody tr.kpi-main{display:block;border-bottom:1px solid var(--line);padding:10px;margin-bottom:10px;background:rgba(15,26,48,.5);border-radius:8px;}
-    tbody tr.daily-row{display:block;border-bottom:1px solid var(--line);padding:8px 10px;margin-bottom:4px;background:rgba(122,162,255,.04);border-radius:6px;margin-left:20px;}
+    tbody tr{display:block;border-bottom:1px solid var(--line);padding:10px;margin-bottom:10px;background:rgba(15,26,48,.5);border-radius:8px;}
     tbody td{display:flex;gap:10px;justify-content:space-between;border-bottom:none;padding:8px 0;}
     tbody td::before{content: attr(data-label);color: var(--muted);font-size:12px;font-weight:600;}
   }
@@ -140,6 +117,8 @@ use function fmtTime;
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;">
       <a class="btn" href="index.php">📞 CDR Report</a>
+      <a class="btn" href="attendance.php">🕐 Attendance</a>
+      <a class="btn" href="breaks.php">⏸️ Breaks</a>
       <?php if ($isAdmin): ?><a class="btn" href="?page=users">👤 User Management</a><?php endif; ?>
       <a class="btn" href="<?= h(buildUrl(['format'=>'excel'])) ?>">📊 Export Excel</a>
       <a class="btn danger" href="<?= h(buildUrl(['action'=>'logout'])) ?>">🚪 Logout</a>
@@ -171,18 +150,6 @@ use function fmtTime;
     <div class="card">
       <div class="k">Total Talk Time</div>
       <div class="v"><?= h(fmtTime($totalBillsec)) ?></div>
-    </div>
-    <div class="card">
-      <div class="k">Total Online Time</div>
-      <div class="v" style="color:var(--accent)"><?= h(fmtTime($totalOnlineSec)) ?></div>
-    </div>
-    <div class="card">
-      <div class="k">Total Pauses</div>
-      <div class="v" style="color:var(--warn)"><?= (int)$totalPauseCount ?></div>
-    </div>
-    <div class="card">
-      <div class="k">Total Pause Time</div>
-      <div class="v" style="color:var(--warn)"><?= h(fmtTime($totalPauseSec)) ?></div>
     </div>
   </div>
 
@@ -269,7 +236,6 @@ use function fmtTime;
     <table>
       <thead>
         <tr>
-          <th style="width:30px;"></th>
           <th>Extension</th>
           <th>Total Calls</th>
           <th>Answered</th>
@@ -281,189 +247,40 @@ use function fmtTime;
           <th>Avg Wait Time</th>
           <th>Avg Talk Time</th>
           <th>Total Talk Time</th>
-          <th>Logins</th>
-          <th>Logouts</th>
-          <th>Online Time</th>
-          <th>Pauses</th>
-          <th>Pause Time</th>
         </tr>
       </thead>
       <tbody>
         <?php if (empty($kpiData)): ?>
-          <tr><td colspan="17" style="color:var(--muted);padding:16px;text-align:center;">No data for this period.</td></tr>
+          <tr><td colspan="11" style="color:var(--muted);padding:16px;text-align:center;">No data for this period.</td></tr>
         <?php else: ?>
-          <?php $extIdx = 0; foreach ($kpiData as $ext):
-            $extIdx++;
-            $totalCalls = (int)($ext['total_calls'] ?? 0);
-            $answered = (int)($ext['answered'] ?? 0);
-            $missed = (int)($ext['missed'] ?? 0);
-            $abandoned = (int)($ext['abandoned'] ?? 0);
-            $busy = (int)($ext['busy'] ?? 0);
-            $failed = (int)($ext['failed'] ?? 0);
-            $answerRate = $totalCalls > 0 ? round(($answered / $totalCalls) * 100, 1) : 0;
-            $avgWait = (int)($ext['avg_wait_time'] ?? 0);
-            $avgTalk = (int)($ext['avg_talk_time'] ?? 0);
-            $totalBillsec = (int)($ext['total_billsec'] ?? 0);
-
-            $rateBadge = 'low';
-            if ($answerRate >= 80) $rateBadge = 'high';
-            elseif ($answerRate >= 60) $rateBadge = 'medium';
-
-            $ae = $agentEvents[$ext['extension']] ?? [];
-            $loginCount  = (int)($ae['login_count'] ?? 0);
-            $logoutCount = (int)($ae['logout_count'] ?? 0);
-            $onlineSec   = (int)($ae['online_sec'] ?? 0);
-            $pauseCount  = (int)($ae['pause_count'] ?? 0);
-            $pauseSec    = (int)($ae['total_pause_sec'] ?? 0);
-
-            $extDays = $dailyData[$ext['extension']] ?? [];
-            $extEvents = $dailyAgentEvents[$ext['extension']] ?? [];
-            // Merge all dates from both call data and agent events
-            $allDates = array_unique(array_merge(array_keys($extDays), array_keys($extEvents)));
-            sort($allDates);
-            $hasDays = !empty($allDates);
-            $dayRowId = 'days-' . $extIdx;
+          <?php foreach ($kpiData as $ext):
+            $totalCallsRow = (int)($ext['total_calls'] ?? 0);
+            $answered   = (int)($ext['answered']       ?? 0);
+            $missed     = (int)($ext['missed']         ?? 0);
+            $abandoned  = (int)($ext['abandoned']      ?? 0);
+            $busy       = (int)($ext['busy']           ?? 0);
+            $failed     = (int)($ext['failed']         ?? 0);
+            $answerRate = $totalCallsRow > 0 ? round(($answered / $totalCallsRow) * 100, 1) : 0;
+            $avgWait    = (int)($ext['avg_wait_time']  ?? 0);
+            $avgTalk    = (int)($ext['avg_talk_time']  ?? 0);
+            $billsec    = (int)($ext['total_billsec']  ?? 0);
+            $rateBadge  = $answerRate >= 80 ? 'high' : ($answerRate >= 60 ? 'medium' : 'low');
           ?>
-            <tr class="kpi-main">
-              <td style="text-align:center;">
-                <?php if ($hasDays): ?>
-                  <span class="expand-toggle" onclick="toggleKpiDetails('<?= h($dayRowId) ?>')" title="Show daily details">
-                    <span class="expand-icon">+</span>
-                  </span>
-                <?php endif; ?>
-              </td>
+            <tr>
               <td data-label="Extension"><strong><?= h($ext['extension']) ?></strong></td>
-              <td data-label="Total Calls"><span class="num"><?= (int)$totalCalls ?></span></td>
-              <td data-label="Answered"><span class="num" style="color:var(--ok)"><?= (int)$answered ?></span></td>
-              <td data-label="Missed"><span class="num" style="color:var(--bad)"><?= (int)$missed ?></span></td>
-              <td data-label="Abandoned"><span class="num" style="color:var(--warn)"><?= (int)$abandoned ?></span></td>
-              <td data-label="Busy"><span class="num" style="color:var(--warn)"><?= (int)$busy ?></span></td>
-              <td data-label="Failed"><span class="num" style="color:var(--bad)"><?= (int)$failed ?></span></td>
+              <td data-label="Total Calls"><span class="num"><?= $totalCallsRow ?></span></td>
+              <td data-label="Answered"><span class="num" style="color:var(--ok)"><?= $answered ?></span></td>
+              <td data-label="Missed"><span class="num" style="color:var(--bad)"><?= $missed ?></span></td>
+              <td data-label="Abandoned"><span class="num" style="color:var(--warn)"><?= $abandoned ?></span></td>
+              <td data-label="Busy"><span class="num" style="color:var(--warn)"><?= $busy ?></span></td>
+              <td data-label="Failed"><span class="num" style="color:var(--bad)"><?= $failed ?></span></td>
               <td data-label="Answer Rate">
                 <span class="badge <?= h($rateBadge) ?>"><?= number_format($answerRate, 1) ?>%</span>
               </td>
-              <td data-label="Avg Wait Time"><span class="num"><?= (int)$avgWait ?></span> sec</td>
-              <td data-label="Avg Talk Time"><span class="num"><?= (int)$avgTalk ?></span> sec</td>
-              <td data-label="Total Talk Time"><?= h(fmtTime($totalBillsec)) ?></td>
-              <td data-label="Logins"><span class="num" style="color:var(--ok)"><?= $loginCount ?></span></td>
-              <td data-label="Logouts"><span class="num" style="color:var(--bad)"><?= $logoutCount ?></span></td>
-              <td data-label="Online Time" style="color:var(--accent)"><?= $onlineSec > 0 ? h(fmtTime($onlineSec)) : '<span style="color:var(--muted)">—</span>' ?></td>
-              <td data-label="Pauses"><span class="num" style="color:var(--warn)"><?= $pauseCount ?></span></td>
-              <td data-label="Pause Time" style="color:var(--warn)"><?= $pauseSec > 0 ? h(fmtTime($pauseSec)) : '<span style="color:var(--muted)">—</span>' ?></td>
+              <td data-label="Avg Wait Time"><span class="num"><?= $avgWait ?></span> sec</td>
+              <td data-label="Avg Talk Time"><span class="num"><?= $avgTalk ?></span> sec</td>
+              <td data-label="Total Talk Time"><?= h(fmtTime($billsec)) ?></td>
             </tr>
-            <?php if ($hasDays): foreach ($allDates as $date):
-              $day = $extDays[$date] ?? null;
-              $dayEvents = $extEvents[$date] ?? [];
-              $dTotal = $day ? (int)($day['total_calls'] ?? 0) : 0;
-              $dAns   = $day ? (int)($day['answered'] ?? 0) : 0;
-              $dMiss  = $day ? (int)($day['missed'] ?? 0) : 0;
-              $dAband = $day ? (int)($day['abandoned'] ?? 0) : 0;
-              $dBusy  = $day ? (int)($day['busy'] ?? 0) : 0;
-              $dFail  = $day ? (int)($day['failed'] ?? 0) : 0;
-              $dRate  = $dTotal > 0 ? round(($dAns / $dTotal) * 100, 1) : 0;
-              $dRBadge = $dRate >= 80 ? 'high' : ($dRate >= 60 ? 'medium' : 'low');
-              $dAvgW  = $day ? (int)($day['avg_wait_time'] ?? 0) : 0;
-              $dAvgT  = $day ? (int)($day['avg_talk_time'] ?? 0) : 0;
-              $dBill  = $day ? (int)($day['total_billsec'] ?? 0) : 0;
-
-              // Summarize agent events: first login, last logout, paired breaks
-              $dayFirstLogin = '';
-              $dayLastLogout = '';
-              $dayBreaks = [];
-              $openPause = null;
-              foreach ($dayEvents as $ev) {
-                  if ($ev['type'] === 'LOGIN' && $dayFirstLogin === '') $dayFirstLogin = $ev['time'];
-                  if ($ev['type'] === 'LOGOUT') $dayLastLogout = $ev['time'];
-                  if ($ev['type'] === 'PAUSE') {
-                      $openPause = ['start' => $ev['time'], 'reason' => $ev['reason']];
-                  }
-                  if ($ev['type'] === 'UNPAUSE') {
-                      if ($openPause !== null) {
-                          $pStart = strtotime($date . ' ' . $openPause['start']);
-                          $pEnd   = strtotime($date . ' ' . $ev['time']);
-                          $dayBreaks[] = [
-                              'start'    => $openPause['start'],
-                              'stop'     => $ev['time'],
-                              'duration' => max(0, $pEnd - $pStart),
-                              'reason'   => $openPause['reason'],
-                          ];
-                          $openPause = null;
-                      }
-                  }
-              }
-              // If pause still open at end of day
-              if ($openPause !== null) {
-                  $pStart = strtotime($date . ' ' . $openPause['start']);
-                  $pEnd   = ($date === date('Y-m-d')) ? time() : strtotime($date . ' 23:59:59');
-                  $dayBreaks[] = [
-                      'start'    => $openPause['start'],
-                      'stop'     => '—',
-                      'duration' => max(0, $pEnd - $pStart),
-                      'reason'   => $openPause['reason'],
-                  ];
-              }
-              // Calculate per-day online time (first login to last logout)
-              $dayOnlineSec = 0;
-              if ($dayFirstLogin !== '' && $dayLastLogout !== '') {
-                  $loginTs  = strtotime($date . ' ' . $dayFirstLogin);
-                  $logoutTs = strtotime($date . ' ' . $dayLastLogout);
-                  $dayOnlineSec = max(0, $logoutTs - $loginTs);
-              }
-              // Per-day pause count and total pause time
-              $dayPauseCount = count($dayBreaks);
-              $dayPauseSec = 0;
-              foreach ($dayBreaks as $brk) {
-                  $dayPauseSec += (int)$brk['duration'];
-              }
-              $hasAgentInfo = ($dayFirstLogin !== '' || $dayLastLogout !== '' || !empty($dayBreaks));
-            ?>
-              <tr class="daily-row <?= h($dayRowId) ?>" style="display:none;">
-                <td></td>
-                <td data-label="Date" style="color:var(--muted);padding-left:24px;">📅 <?= h($date) ?></td>
-                <td data-label="Total Calls"><span class="num"><?= $dTotal ?></span></td>
-                <td data-label="Answered"><span class="num" style="color:var(--ok)"><?= $dAns ?></span></td>
-                <td data-label="Missed"><span class="num" style="color:var(--bad)"><?= $dMiss ?></span></td>
-                <td data-label="Abandoned"><span class="num" style="color:var(--warn)"><?= $dAband ?></span></td>
-                <td data-label="Busy"><span class="num" style="color:var(--warn)"><?= $dBusy ?></span></td>
-                <td data-label="Failed"><span class="num" style="color:var(--bad)"><?= $dFail ?></span></td>
-                <td data-label="Answer Rate"><span class="badge <?= h($dRBadge) ?>"><?= number_format($dRate, 1) ?>%</span></td>
-                <td data-label="Avg Wait Time"><span class="num"><?= $dAvgW ?></span> sec</td>
-                <td data-label="Avg Talk Time"><span class="num"><?= $dAvgT ?></span> sec</td>
-                <td data-label="Total Talk Time"><?= h(fmtTime($dBill)) ?></td>
-                <td data-label="First Login" style="color:var(--ok);"><?= $dayFirstLogin ? '🟢 ' . h($dayFirstLogin) : '<span style="color:var(--muted)">—</span>' ?></td>
-                <td data-label="Last Logout" style="color:var(--bad);"><?= $dayLastLogout ? '🔴 ' . h($dayLastLogout) : '<span style="color:var(--muted)">—</span>' ?></td>
-                <td data-label="Online Time" style="color:var(--accent)"><?= $dayOnlineSec > 0 ? h(fmtTime($dayOnlineSec)) : '<span style="color:var(--muted)">—</span>' ?></td>
-                <td data-label="Pauses"><span class="num" style="color:var(--warn)"><?= $dayPauseCount ?></span></td>
-                <td data-label="Pause Time" style="color:var(--warn)"><?= $dayPauseSec > 0 ? h(fmtTime($dayPauseSec)) : '<span style="color:var(--muted)">—</span>' ?></td>
-              </tr>
-              <?php if (!empty($dayBreaks)): ?>
-              <tr class="daily-row <?= h($dayRowId) ?>" style="display:none;">
-                <td></td>
-                <td colspan="16" style="padding:0 8px 8px 24px !important;">
-                  <table class="events-table">
-                    <thead>
-                      <tr>
-                        <th>Break Reason</th>
-                        <th>Start</th>
-                        <th>Stop</th>
-                        <th>Duration</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <?php foreach ($dayBreaks as $brk): ?>
-                        <tr>
-                          <td style="color:var(--warn);">⏸️ <?= $brk['reason'] ? h($brk['reason']) : '<span style="color:var(--muted)">No reason</span>' ?></td>
-                          <td class="mono-cell"><?= h($brk['start']) ?></td>
-                          <td class="mono-cell"><?= h($brk['stop']) ?></td>
-                          <td style="color:var(--accent);"><?= h(fmtTime($brk['duration'])) ?></td>
-                        </tr>
-                      <?php endforeach; ?>
-                    </tbody>
-                  </table>
-                </td>
-              </tr>
-              <?php endif; ?>
-            <?php endforeach; endif; ?>
           <?php endforeach; ?>
         <?php endif; ?>
       </tbody>
@@ -473,15 +290,6 @@ use function fmtTime;
 </div>
 
 <script>
-function toggleKpiDetails(className) {
-  const rows = document.querySelectorAll('.' + className);
-  const toggle = event.currentTarget;
-  const isExpanded = toggle.classList.contains('expanded');
-
-  rows.forEach(r => { r.style.display = isExpanded ? 'none' : 'table-row'; });
-  toggle.classList.toggle('expanded');
-}
-
 function toggleExtDropdown() {
   document.getElementById('extMultiDrop').classList.toggle('open');
 }
@@ -497,7 +305,6 @@ function updateExtLabel() {
   }
 }
 
-// Close dropdown when clicking outside
 document.addEventListener('click', function(e) {
   const wrap = document.getElementById('extMultiWrap');
   if (wrap && !wrap.contains(e.target)) {

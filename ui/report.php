@@ -183,6 +183,8 @@ $gateway = (string)($filters['gateway'] ?? '');
     <div style="display:flex;gap:10px;flex-wrap:wrap;">
       <a class="btn" href="realtime.php">📡 Realtime Report</a>
       <a class="btn" href="kpi.php">📊 Extension KPIs</a>
+      <a class="btn" href="attendance.php">🕐 Attendance</a>
+      <a class="btn" href="breaks.php">⏸️ Breaks</a>
       <?php if ($isAdmin): ?><a class="btn" href="<?= h(buildUrl(['page'=>'users'])) ?>">👤 User Management</a><?php endif; ?>
       <a class="btn" href="<?= h(buildUrl(['format'=>'csv','page'=>1])) ?>">⬇ Export CSV</a>
       <a class="btn" href="<?= h(buildUrl(['format'=>'excel','page'=>1])) ?>">📊 Export Excel</a>

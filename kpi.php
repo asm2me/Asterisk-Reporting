@@ -76,7 +76,6 @@ $kpiData = fetchExtensionKPIs($CONFIG, $pdo, $me, $filters);
    and add entries for extensions that have agent events but no CDR data */
 if (!empty($knownExtensions)) {
     $kpiData = array_filter($kpiData, fn($row) => in_array($row['extension'], $knownExtensions));
-    // Add extensions from agent_event that have no CDR rows
     $kpiExts = array_column($kpiData, 'extension');
     foreach ($knownExtensions as $ke) {
         if (!in_array($ke, $kpiExts)) {
@@ -90,17 +89,9 @@ if (!empty($knownExtensions)) {
     $kpiData = array_values($kpiData);
 }
 
-/* Fetch Agent Event KPIs (login/logout/pause from agent_event table) */
-$agentEvents = fetchAgentEventKPIs($pdo, $me, $from, $to);
-
-/* Fetch daily KPIs per extension for detail rows */
-$dailyData = fetchDailyExtensionKPIs($CONFIG, $pdo, $me, $filters);
-
-/* Fetch daily agent events (login/logout/pause/unpause with reasons) */
-$dailyAgentEvents = fetchDailyAgentEvents($pdo, $me, $from, $to);
-
 if ($format === 'excel') {
-    streamExcelKpis($kpiData, $agentEvents, $dailyData, $dailyAgentEvents, $from, $to);
+    $dailyData = fetchDailyExtensionKPIs($CONFIG, $pdo, $me, $filters);
+    streamExcelKpis($kpiData, $dailyData, $from, $to);
     exit;
 }
 
@@ -111,25 +102,14 @@ $totalMissed = 0;
 $totalAbandoned = 0;
 $totalBusy = 0;
 $totalBillsec = 0;
-$totalLoginCount = 0;
-$totalLogoutCount = 0;
-$totalPauseCount = 0;
-$totalPauseSec = 0;
-$totalOnlineSec = 0;
 
 foreach ($kpiData as $ext) {
-    $totalCalls += (int)($ext['total_calls'] ?? 0);
-    $totalAnswered += (int)($ext['answered'] ?? 0);
-    $totalMissed += (int)($ext['missed'] ?? 0);
-    $totalAbandoned += (int)($ext['abandoned'] ?? 0);
-    $totalBusy += (int)($ext['busy'] ?? 0);
-    $totalBillsec += (int)($ext['total_billsec'] ?? 0);
-    $ae = $agentEvents[$ext['extension']] ?? [];
-    $totalLoginCount += (int)($ae['login_count'] ?? 0);
-    $totalLogoutCount += (int)($ae['logout_count'] ?? 0);
-    $totalPauseCount += (int)($ae['pause_count'] ?? 0);
-    $totalPauseSec += (int)($ae['total_pause_sec'] ?? 0);
-    $totalOnlineSec += (int)($ae['online_sec'] ?? 0);
+    $totalCalls    += (int)($ext['total_calls']   ?? 0);
+    $totalAnswered += (int)($ext['answered']       ?? 0);
+    $totalMissed   += (int)($ext['missed']         ?? 0);
+    $totalAbandoned+= (int)($ext['abandoned']      ?? 0);
+    $totalBusy     += (int)($ext['busy']           ?? 0);
+    $totalBillsec  += (int)($ext['total_billsec']  ?? 0);
 }
 
 require __DIR__ . '/ui/kpi.php';
