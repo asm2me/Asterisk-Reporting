@@ -8,6 +8,7 @@ use function fmtTime;
 /** @var string $from */
 /** @var string $to */
 /** @var array $attendanceData */
+/** @var array $dailyAgentEvents */
 /** @var array $availableExtensions */
 /** @var array $selectedExts */
 ?>
@@ -61,10 +62,27 @@ use function fmtTime;
   thead th{position:sticky;top:0;background:rgba(15,26,48,.92);border-bottom:1px solid var(--line);
        font-size:12px;color:var(--muted);text-align:left;padding:12px;white-space:nowrap}
   tbody td{border-bottom:1px solid var(--line);padding:12px;font-size:13px;}
-  tbody tr:hover{background:rgba(255,255,255,.03)}
+  tbody tr:hover td{background:rgba(255,255,255,.02)}
 
   .tableWrap{padding:0;overflow:auto;-webkit-overflow-scrolling:touch}
   .num{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:600;}
+
+  /* Expand toggle */
+  .expand-toggle{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;cursor:pointer;
+                 background:rgba(68,209,157,.12);border:1px solid rgba(68,209,157,.3);border-radius:6px;user-select:none;flex-shrink:0;}
+  .expand-toggle:hover{background:rgba(68,209,157,.22)}
+  .expand-icon{font-weight:bold;font-size:14px;line-height:1;color:var(--ok);transition:transform 0.2s;}
+  .expand-toggle.expanded .expand-icon{transform:rotate(45deg);}
+
+  /* Detail rows */
+  .att-detail td{background:rgba(68,209,157,.04);font-size:12px;padding:7px 12px !important;}
+  .att-detail td:first-child{padding-left:44px !important;}
+
+  /* Inner event table */
+  .event-table{width:auto;min-width:260px;border-collapse:collapse;margin:4px 0;border:1px solid var(--line);border-radius:8px;overflow:hidden;}
+  .event-table thead th{background:rgba(15,26,48,.8);font-size:11px;color:var(--muted);text-align:left;padding:5px 10px;border-bottom:1px solid var(--line);white-space:nowrap;position:static;}
+  .event-table tbody td{padding:4px 10px;font-size:12px;border-bottom:1px solid rgba(255,255,255,.04);white-space:nowrap;}
+  .event-table tbody tr:last-child td{border-bottom:none;}
 
   /* Multi-select extension dropdown */
   .multiselect-wrap{position:relative;}
@@ -77,12 +95,10 @@ use function fmtTime;
   .multiselect-dropdown input[type="checkbox"]{accent-color:var(--accent);width:16px;height:16px;}
   .ext-tag{display:inline-flex;padding:2px 6px;border-radius:4px;background:rgba(122,162,255,.15);font-size:11px;color:var(--accent);margin:1px 2px;}
 
-  .ext-group td:first-child{font-weight:700;color:var(--accent);}
-  .ext-group-alt{background:rgba(122,162,255,.03);}
-
   @media(max-width:900px){
     thead{display:none;}
-    tbody tr{display:block;border-bottom:1px solid var(--line);padding:10px;margin-bottom:8px;background:rgba(15,26,48,.5);border-radius:8px;}
+    tbody tr.att-main{display:block;border-bottom:1px solid var(--line);padding:10px;margin-bottom:8px;background:rgba(15,26,48,.5);border-radius:8px;}
+    tbody tr.att-detail{display:block;padding:8px 10px;margin-bottom:4px;background:rgba(68,209,157,.04);border-radius:6px;margin-left:20px;}
     tbody td{display:flex;gap:10px;justify-content:space-between;border-bottom:none;padding:6px 0;}
     tbody td::before{content:attr(data-label);color:var(--muted);font-size:12px;font-weight:600;}
   }
@@ -146,6 +162,7 @@ use function fmtTime;
     <table>
       <thead>
         <tr>
+          <th style="width:30px;"></th>
           <th>Extension</th>
           <th>Date</th>
           <th>First Login</th>
@@ -156,20 +173,33 @@ use function fmtTime;
         </tr>
       </thead>
       <tbody>
-        <?php if (empty($attendanceData)): ?>
-          <tr><td colspan="7" style="color:var(--muted);padding:16px;text-align:center;">No attendance data for this period.</td></tr>
-        <?php else:
-          $rowClass = 0;
-          foreach ($attendanceData as $extNum => $dates):
-            $sortedDates = array_keys($dates);
-            sort($sortedDates);
-            $rowClass++;
-            foreach ($sortedDates as $date):
-              $d = $dates[$date];
+        <?php
+        $hasAny = false;
+        $rowIdx = 0;
+        foreach ($attendanceData as $extNum => $dates):
+          $sortedDates = array_keys($dates);
+          sort($sortedDates);
+          foreach ($sortedDates as $date):
+            $d = $dates[$date];
+            // Collect only LOGIN/LOGOUT events for this extension+date
+            $loginLogoutEvents = array_values(array_filter(
+                $dailyAgentEvents[$extNum][$date] ?? [],
+                fn($ev) => $ev['type'] === 'LOGIN' || $ev['type'] === 'LOGOUT'
+            ));
+            $hasAny = true;
+            $rowIdx++;
+            $detailId = 'att-' . $rowIdx;
         ?>
-          <tr class="<?= $rowClass % 2 === 0 ? 'ext-group-alt' : '' ?>">
+          <tr class="att-main">
+            <td style="text-align:center;">
+              <?php if (!empty($loginLogoutEvents)): ?>
+                <span class="expand-toggle" onclick="toggleAttDetail('<?= h($detailId) ?>')" title="Show login/logout events">
+                  <span class="expand-icon">+</span>
+                </span>
+              <?php endif; ?>
+            </td>
             <td data-label="Extension"><strong style="color:var(--accent);"><?= h($extNum) ?></strong></td>
-            <td data-label="Date" style="color:var(--muted);"><?= h($date) ?></td>
+            <td data-label="Date" style="color:var(--muted);">📅 <?= h($date) ?></td>
             <td data-label="First Login" style="color:var(--ok);">
               <?= $d['first_login'] ? '🟢 ' . h($d['first_login']) : '<span style="color:var(--muted)">—</span>' ?>
             </td>
@@ -182,7 +212,39 @@ use function fmtTime;
             <td data-label="Logins"><span class="num" style="color:var(--ok);"><?= (int)$d['login_count'] ?></span></td>
             <td data-label="Logouts"><span class="num" style="color:var(--bad);"><?= (int)$d['logout_count'] ?></span></td>
           </tr>
-        <?php endforeach; endforeach; endif; ?>
+          <?php if (!empty($loginLogoutEvents)): ?>
+          <tr class="att-detail <?= h($detailId) ?>" style="display:none;">
+            <td></td>
+            <td colspan="7" style="padding:4px 8px 10px 16px !important;">
+              <table class="event-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Event</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <?php foreach ($loginLogoutEvents as $ev): ?>
+                    <tr>
+                      <td class="num"><?= h($ev['time']) ?></td>
+                      <td>
+                        <?php if ($ev['type'] === 'LOGIN'): ?>
+                          <span style="color:var(--ok);">🟢 LOGIN</span>
+                        <?php else: ?>
+                          <span style="color:var(--bad);">🔴 LOGOUT</span>
+                        <?php endif; ?>
+                      </td>
+                    </tr>
+                  <?php endforeach; ?>
+                </tbody>
+              </table>
+            </td>
+          </tr>
+          <?php endif; ?>
+        <?php endforeach; endforeach; ?>
+        <?php if (!$hasAny): ?>
+          <tr><td colspan="8" style="color:var(--muted);padding:16px;text-align:center;">No attendance data for this period.</td></tr>
+        <?php endif; ?>
       </tbody>
     </table>
   </div>
@@ -190,6 +252,14 @@ use function fmtTime;
 </div>
 
 <script>
+function toggleAttDetail(className) {
+  const rows = document.querySelectorAll('.' + className);
+  const toggle = event.currentTarget;
+  const isExpanded = toggle.classList.contains('expanded');
+  rows.forEach(r => { r.style.display = isExpanded ? 'none' : 'table-row'; });
+  toggle.classList.toggle('expanded');
+}
+
 function toggleExtDropdown() {
   document.getElementById('extMultiDrop').classList.toggle('open');
 }
