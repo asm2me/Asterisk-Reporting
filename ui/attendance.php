@@ -181,25 +181,54 @@ use function fmtTime;
           sort($sortedDates);
           foreach ($sortedDates as $date):
             $d = $dates[$date];
-            // Collect LOGIN/LOGOUT events, deduplicated by type+time
-            $loginLogoutEvents = [];
+            // Deduplicate LOGIN/LOGOUT events by type+time
+            $dedupEvents = [];
             $seenEvt = [];
             foreach ($dailyAgentEvents[$extNum][$date] ?? [] as $ev) {
                 if ($ev['type'] !== 'LOGIN' && $ev['type'] !== 'LOGOUT') continue;
                 $key = $ev['type'] . '|' . $ev['time'];
                 if (!isset($seenEvt[$key])) {
                     $seenEvt[$key] = true;
-                    $loginLogoutEvents[] = $ev;
+                    $dedupEvents[] = $ev;
                 }
             }
+
+            // Pair LOGIN→LOGOUT chronologically, compute per-session online time
+            $sessions = [];
+            $openLogin = null;
+            foreach ($dedupEvents as $ev) {
+                if ($ev['type'] === 'LOGIN') {
+                    $openLogin = $ev['time'];
+                } elseif ($ev['type'] === 'LOGOUT' && $openLogin !== null) {
+                    $lTs = strtotime($date . ' ' . $openLogin);
+                    $oTs = strtotime($date . ' ' . $ev['time']);
+                    $sessions[] = ['login' => $openLogin, 'logout' => $ev['time'], 'duration' => max(0, $oTs - $lTs)];
+                    $openLogin = null;
+                }
+            }
+            // Still logged in — no matching logout yet
+            if ($openLogin !== null) {
+                $lTs  = strtotime($date . ' ' . $openLogin);
+                $nowTs = ($date === date('Y-m-d')) ? time() : strtotime($date . ' 23:59:59');
+                $sessions[] = ['login' => $openLogin, 'logout' => '', 'duration' => max(0, $nowTs - $lTs)];
+            }
+
+            // Derived summary values from deduplicated/paired data
+            $dedupLoginCount  = count(array_filter($dedupEvents, fn($e) => $e['type'] === 'LOGIN'));
+            $dedupLogoutCount = count(array_filter($dedupEvents, fn($e) => $e['type'] === 'LOGOUT'));
+            $totalOnlineSec   = array_sum(array_column($sessions, 'duration'));
+            $firstLogin       = $dedupLoginCount  > 0 ? $dedupEvents[array_key_first(array_filter($dedupEvents, fn($e) => $e['type'] === 'LOGIN'))]['time']  : '';
+            $lastLogout       = '';
+            foreach ($dedupEvents as $ev) { if ($ev['type'] === 'LOGOUT') $lastLogout = $ev['time']; }
+
             $hasAny = true;
             $rowIdx++;
             $detailId = 'att-' . $rowIdx;
         ?>
           <tr class="att-main">
             <td style="text-align:center;">
-              <?php if (!empty($loginLogoutEvents)): ?>
-                <span class="expand-toggle" onclick="toggleAttDetail('<?= h($detailId) ?>')" title="Show login/logout events">
+              <?php if (!empty($sessions)): ?>
+                <span class="expand-toggle" onclick="toggleAttDetail('<?= h($detailId) ?>')" title="Show sessions">
                   <span class="expand-icon">+</span>
                 </span>
               <?php endif; ?>
@@ -207,39 +236,41 @@ use function fmtTime;
             <td data-label="Extension"><strong style="color:var(--accent);"><?= h($extNum) ?></strong></td>
             <td data-label="Date" style="color:var(--muted);">📅 <?= h($date) ?></td>
             <td data-label="First Login" style="color:var(--ok);">
-              <?= $d['first_login'] ? '🟢 ' . h($d['first_login']) : '<span style="color:var(--muted)">—</span>' ?>
+              <?= $firstLogin ? '🟢 ' . h($firstLogin) : '<span style="color:var(--muted)">—</span>' ?>
             </td>
             <td data-label="Last Logout" style="color:var(--bad);">
-              <?= $d['last_logout'] ? '🔴 ' . h($d['last_logout']) : '<span style="color:var(--muted)">—</span>' ?>
+              <?= $lastLogout ? '🔴 ' . h($lastLogout) : '<span style="color:var(--muted)">—</span>' ?>
             </td>
             <td data-label="Online Time" style="color:var(--accent);">
-              <?= $d['online_sec'] > 0 ? h(fmtTime($d['online_sec'])) : '<span style="color:var(--muted)">—</span>' ?>
+              <?= $totalOnlineSec > 0 ? h(fmtTime($totalOnlineSec)) : '<span style="color:var(--muted)">—</span>' ?>
             </td>
-            <td data-label="Logins"><span class="num" style="color:var(--ok);"><?= (int)$d['login_count'] ?></span></td>
-            <td data-label="Logouts"><span class="num" style="color:var(--bad);"><?= (int)$d['logout_count'] ?></span></td>
+            <td data-label="Logins"><span class="num" style="color:var(--ok);"><?= $dedupLoginCount ?></span></td>
+            <td data-label="Logouts"><span class="num" style="color:var(--bad);"><?= $dedupLogoutCount ?></span></td>
           </tr>
-          <?php if (!empty($loginLogoutEvents)): ?>
+          <?php if (!empty($sessions)): ?>
           <tr class="att-detail <?= h($detailId) ?>" style="display:none;">
             <td></td>
             <td colspan="7" style="padding:4px 8px 10px 16px !important;">
               <table class="event-table">
                 <thead>
                   <tr>
-                    <th>Time</th>
-                    <th>Event</th>
+                    <th>Login</th>
+                    <th>Logout</th>
+                    <th>Online Time</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <?php foreach ($loginLogoutEvents as $ev): ?>
+                  <?php foreach ($sessions as $sess): ?>
                     <tr>
-                      <td class="num"><?= h($ev['time']) ?></td>
+                      <td style="color:var(--ok);"><span class="num">🟢 <?= h($sess['login']) ?></span></td>
                       <td>
-                        <?php if ($ev['type'] === 'LOGIN'): ?>
-                          <span style="color:var(--ok);">🟢 LOGIN</span>
+                        <?php if ($sess['logout'] !== ''): ?>
+                          <span class="num" style="color:var(--bad);">🔴 <?= h($sess['logout']) ?></span>
                         <?php else: ?>
-                          <span style="color:var(--bad);">🔴 LOGOUT</span>
+                          <span style="color:var(--warn);">Still online</span>
                         <?php endif; ?>
                       </td>
+                      <td style="color:var(--accent);"><?= h(fmtTime($sess['duration'])) ?></td>
                     </tr>
                   <?php endforeach; ?>
                 </tbody>
