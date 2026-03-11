@@ -19,6 +19,7 @@ use function fmtTime;
 /** @var int $totalPauseSec */
 /** @var int $totalOnlineSec */
 /** @var array $dailyData */
+/** @var array $dailyAgentEvents */
 /** @var array $selectedExts */
 ?>
 <!doctype html>
@@ -100,6 +101,7 @@ use function fmtTime;
 
   .daily-row td{background:rgba(122,162,255,.04);font-size:12px;padding:8px 12px !important;}
   .daily-row td:first-child{padding-left:40px !important;}
+  .event-tag{display:inline-flex;align-items:center;gap:3px;font-size:11px;padding:2px 6px;border-radius:4px;background:rgba(255,255,255,.04);border:1px solid var(--line);white-space:nowrap;}
 
   /* Multi-select extension dropdown */
   .multiselect-wrap{position:relative;}
@@ -310,7 +312,11 @@ use function fmtTime;
             $pauseSec    = (int)($ae['total_pause_sec'] ?? 0);
 
             $extDays = $dailyData[$ext['extension']] ?? [];
-            $hasDays = !empty($extDays);
+            $extEvents = $dailyAgentEvents[$ext['extension']] ?? [];
+            // Merge all dates from both call data and agent events
+            $allDates = array_unique(array_merge(array_keys($extDays), array_keys($extEvents)));
+            sort($allDates);
+            $hasDays = !empty($allDates);
             $dayRowId = 'days-' . $extIdx;
           ?>
             <tr class="kpi-main">
@@ -340,18 +346,20 @@ use function fmtTime;
               <td data-label="Pauses"><span class="num" style="color:var(--warn)"><?= $pauseCount ?></span></td>
               <td data-label="Pause Time" style="color:var(--warn)"><?= $pauseSec > 0 ? h(fmtTime($pauseSec)) : '<span style="color:var(--muted)">—</span>' ?></td>
             </tr>
-            <?php if ($hasDays): foreach ($extDays as $date => $day):
-              $dTotal = (int)($day['total_calls'] ?? 0);
-              $dAns   = (int)($day['answered'] ?? 0);
-              $dMiss  = (int)($day['missed'] ?? 0);
-              $dAband = (int)($day['abandoned'] ?? 0);
-              $dBusy  = (int)($day['busy'] ?? 0);
-              $dFail  = (int)($day['failed'] ?? 0);
+            <?php if ($hasDays): foreach ($allDates as $date):
+              $day = $extDays[$date] ?? null;
+              $dayEvents = $extEvents[$date] ?? [];
+              $dTotal = $day ? (int)($day['total_calls'] ?? 0) : 0;
+              $dAns   = $day ? (int)($day['answered'] ?? 0) : 0;
+              $dMiss  = $day ? (int)($day['missed'] ?? 0) : 0;
+              $dAband = $day ? (int)($day['abandoned'] ?? 0) : 0;
+              $dBusy  = $day ? (int)($day['busy'] ?? 0) : 0;
+              $dFail  = $day ? (int)($day['failed'] ?? 0) : 0;
               $dRate  = $dTotal > 0 ? round(($dAns / $dTotal) * 100, 1) : 0;
               $dRBadge = $dRate >= 80 ? 'high' : ($dRate >= 60 ? 'medium' : 'low');
-              $dAvgW  = (int)($day['avg_wait_time'] ?? 0);
-              $dAvgT  = (int)($day['avg_talk_time'] ?? 0);
-              $dBill  = (int)($day['total_billsec'] ?? 0);
+              $dAvgW  = $day ? (int)($day['avg_wait_time'] ?? 0) : 0;
+              $dAvgT  = $day ? (int)($day['avg_talk_time'] ?? 0) : 0;
+              $dBill  = $day ? (int)($day['total_billsec'] ?? 0) : 0;
             ?>
               <tr class="daily-row <?= h($dayRowId) ?>" style="display:none;">
                 <td></td>
@@ -366,7 +374,26 @@ use function fmtTime;
                 <td data-label="Avg Wait Time"><span class="num"><?= $dAvgW ?></span> sec</td>
                 <td data-label="Avg Talk Time"><span class="num"><?= $dAvgT ?></span> sec</td>
                 <td data-label="Total Talk Time"><?= h(fmtTime($dBill)) ?></td>
-                <td colspan="5"></td>
+                <td colspan="5" style="padding:4px 8px !important;">
+                  <?php if (!empty($dayEvents)): ?>
+                    <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                      <?php foreach ($dayEvents as $ev):
+                        $evType = $ev['type'];
+                        $evTime = $ev['time'];
+                        $evReason = $ev['reason'];
+                        if ($evType === 'LOGIN')       { $evIcon = '🟢'; $evColor = 'var(--ok)'; $evLabel = 'Login'; }
+                        elseif ($evType === 'LOGOUT')  { $evIcon = '🔴'; $evColor = 'var(--bad)'; $evLabel = 'Logout'; }
+                        elseif ($evType === 'PAUSE')   { $evIcon = '⏸️'; $evColor = 'var(--warn)'; $evLabel = 'Pause'; }
+                        elseif ($evType === 'UNPAUSE') { $evIcon = '▶️'; $evColor = 'var(--accent)'; $evLabel = 'Unpause'; }
+                        else { $evIcon = '⚪'; $evColor = 'var(--muted)'; $evLabel = $evType; }
+                      ?>
+                        <span class="event-tag" style="color:<?= $evColor ?>;" title="<?= h($evLabel . ($evReason ? ': ' . $evReason : '')) ?>">
+                          <?= $evIcon ?> <?= h($evTime) ?><?php if ($evReason): ?> <span style="color:var(--muted);font-size:10px;">(<?= h($evReason) ?>)</span><?php endif; ?>
+                        </span>
+                      <?php endforeach; ?>
+                    </div>
+                  <?php endif; ?>
+                </td>
               </tr>
             <?php endforeach; endif; ?>
           <?php endforeach; ?>

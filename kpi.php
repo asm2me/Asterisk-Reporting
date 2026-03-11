@@ -65,10 +65,30 @@ $filters = [
     'gateway' => $gateway,
 ];
 
-$availableExtensions = fetchAvailableExtensions($CONFIG, $pdo, $me, $from, $to);
+/* Get known local extensions from agent_event table */
+$knownExtensions = fetchKnownExtensions($pdo, $me, $from, $to);
+$availableExtensions = $knownExtensions;
 
 /* Fetch Extension KPIs */
 $kpiData = fetchExtensionKPIs($CONFIG, $pdo, $me, $filters);
+
+/* Filter KPIs to only known local extensions from agent_event table,
+   and add entries for extensions that have agent events but no CDR data */
+if (!empty($knownExtensions)) {
+    $kpiData = array_filter($kpiData, fn($row) => in_array($row['extension'], $knownExtensions));
+    // Add extensions from agent_event that have no CDR rows
+    $kpiExts = array_column($kpiData, 'extension');
+    foreach ($knownExtensions as $ke) {
+        if (!in_array($ke, $kpiExts)) {
+            $kpiData[] = [
+                'extension' => $ke, 'total_calls' => 0, 'answered' => 0,
+                'missed' => 0, 'abandoned' => 0, 'busy' => 0, 'failed' => 0,
+                'total_billsec' => 0, 'avg_talk_time' => 0, 'avg_wait_time' => 0,
+            ];
+        }
+    }
+    $kpiData = array_values($kpiData);
+}
 
 /* Fetch Agent Event KPIs (login/logout/pause from agent_event table) */
 $agentEvents = fetchAgentEventKPIs($pdo, $me, $from, $to);
@@ -76,8 +96,11 @@ $agentEvents = fetchAgentEventKPIs($pdo, $me, $from, $to);
 /* Fetch daily KPIs per extension for detail rows */
 $dailyData = fetchDailyExtensionKPIs($CONFIG, $pdo, $me, $filters);
 
+/* Fetch daily agent events (login/logout/pause/unpause with reasons) */
+$dailyAgentEvents = fetchDailyAgentEvents($pdo, $me, $from, $to);
+
 if ($format === 'excel') {
-    streamExcelKpis($kpiData, $agentEvents, $dailyData, $from, $to);
+    streamExcelKpis($kpiData, $agentEvents, $dailyData, $dailyAgentEvents, $from, $to);
     exit;
 }
 

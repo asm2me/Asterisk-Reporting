@@ -597,6 +597,50 @@ function fetchGateways(array $CONFIG, PDO $pdo): array {
     }
 }
 
+/**
+ * Returns all known local extensions from the agent_event table.
+ * These are actual agent extensions (not dialed phone numbers).
+ */
+function fetchKnownExtensions(PDO $pdo, array $me, string $from, string $to): array {
+    $fromDt = $from . ' 00:00:00';
+    $toDt   = $to   . ' 23:59:59';
+
+    $aclSql = '1=1';
+    $aclParams = [];
+    if (empty($me['is_admin'])) {
+        $allowedExts = (array)($me['extensions'] ?? []);
+        if (count($allowedExts) === 0) return [];
+        $placeholders = [];
+        foreach ($allowedExts as $i => $ext) {
+            $k = ':ke_ext_' . $i;
+            $placeholders[] = $k;
+            $aclParams[$k] = $ext;
+        }
+        $aclSql = 'extension IN (' . implode(',', $placeholders) . ')';
+    }
+
+    $sql = "
+    SELECT DISTINCT extension
+    FROM agent_event
+    WHERE event_time >= :fromDt AND event_time <= :toDt
+      AND {$aclSql}
+    ORDER BY extension
+    ";
+
+    $params = array_merge([':fromDt' => $fromDt, ':toDt' => $toDt], $aclParams);
+
+    try {
+        $st = $pdo->prepare($sql);
+        foreach ($params as $k => $v) {
+            $st->bindValue($k, (string)$v, PDO::PARAM_STR);
+        }
+        $st->execute();
+        return array_column($st->fetchAll() ?: [], 'extension');
+    } catch (Throwable $e) {
+        return [];
+    }
+}
+
 function fetchExtensionKPIs(array $CONFIG, PDO $pdo, array $me, array $filters): array {
     $params = [];
     $whereSql = buildWhere($CONFIG, $me, $filters, $params);
@@ -743,6 +787,66 @@ function fetchDailyExtensionKPIs(array $CONFIG, PDO $pdo, array $me, array $filt
         $result = [];
         foreach ($st->fetchAll() ?: [] as $row) {
             $result[$row['extension']][$row['call_date']] = $row;
+        }
+        return $result;
+    } catch (Throwable $e) {
+        return [];
+    }
+}
+
+/**
+ * Fetch individual agent events (LOGIN/LOGOUT/PAUSE/UNPAUSE) with timestamps
+ * and reasons, grouped by extension and date.
+ * Returns: [extension => [date => [ [event_time, event_type, reason], ...], ...], ...]
+ */
+function fetchDailyAgentEvents(PDO $pdo, array $me, string $from, string $to): array {
+    try {
+        $pdo->query("SELECT 1 FROM agent_event LIMIT 1");
+    } catch (Throwable $e) {
+        return [];
+    }
+
+    $fromDt = $from . ' 00:00:00';
+    $toDt   = $to   . ' 23:59:59';
+
+    $aclSql = '1=1';
+    $aclParams = [];
+    if (empty($me['is_admin'])) {
+        $allowedExts = (array)($me['extensions'] ?? []);
+        if (count($allowedExts) === 0) return [];
+        $placeholders = [];
+        foreach ($allowedExts as $i => $ext) {
+            $k = ':dae_ext_' . $i;
+            $placeholders[] = $k;
+            $aclParams[$k] = $ext;
+        }
+        $aclSql = 'extension IN (' . implode(',', $placeholders) . ')';
+    }
+
+    $sql = "
+    SELECT extension, event_time, event_type, reason
+    FROM agent_event
+    WHERE event_time >= :fromDt AND event_time <= :toDt
+      AND {$aclSql}
+    ORDER BY extension, event_time
+    ";
+
+    $params = array_merge([':fromDt' => $fromDt, ':toDt' => $toDt], $aclParams);
+
+    try {
+        $st = $pdo->prepare($sql);
+        foreach ($params as $k => $v) {
+            $st->bindValue($k, (string)$v, PDO::PARAM_STR);
+        }
+        $st->execute();
+        $result = [];
+        foreach ($st->fetchAll() ?: [] as $row) {
+            $date = substr($row['event_time'], 0, 10); // YYYY-MM-DD
+            $result[$row['extension']][$date][] = [
+                'time'  => substr($row['event_time'], 11, 8), // HH:MM:SS
+                'type'  => $row['event_type'],
+                'reason' => $row['reason'] ?? '',
+            ];
         }
         return $result;
     } catch (Throwable $e) {
@@ -1122,10 +1226,11 @@ function streamExcel(array $CONFIG, PDO $pdo, array $me, array $filters): void {
 /**
  * Export KPI data array as XLSX.
  */
-function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, string $from, string $to): void {
+function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, array $dailyAgentEvents, string $from, string $to): void {
     $headers = ['Extension','Total Calls','Answered','Missed','Abandoned','Busy','Failed',
                 'Answer Rate %','Avg Wait (sec)','Avg Talk (sec)','Total Talk (sec)',
-                'First Login','Last Logout','Online Time (sec)','Pauses','Pause Time (sec)'];
+                'First Login','Last Logout','Online Time (sec)','Pauses','Pause Time (sec)',
+                'Agent Events'];
     $rows = [];
     foreach ($kpiData as $ext) {
         $total  = (int)($ext['total_calls'] ?? 0);
@@ -1149,26 +1254,40 @@ function streamExcelKpis(array $kpiData, array $agentEvents, array $dailyData, s
             (int)($ae['online_sec']       ?? 0),
             (int)($ae['pause_count']      ?? 0),
             (int)($ae['total_pause_sec']  ?? 0),
+            '',
         ];
         // Append daily detail rows for this extension (expanded)
         $extDays = $dailyData[$ext['extension']] ?? [];
-        foreach ($extDays as $date => $day) {
-            $dTotal = (int)($day['total_calls'] ?? 0);
-            $dAns   = (int)($day['answered'] ?? 0);
+        $extEvents = $dailyAgentEvents[$ext['extension']] ?? [];
+        $allDates = array_unique(array_merge(array_keys($extDays), array_keys($extEvents)));
+        sort($allDates);
+        foreach ($allDates as $date) {
+            $day = $extDays[$date] ?? null;
+            $dayEvts = $extEvents[$date] ?? [];
+            $dTotal = $day ? (int)($day['total_calls'] ?? 0) : 0;
+            $dAns   = $day ? (int)($day['answered'] ?? 0) : 0;
             $dRate  = $dTotal > 0 ? round(($dAns / $dTotal) * 100, 1) : 0.0;
+            // Build agent events summary string
+            $evParts = [];
+            foreach ($dayEvts as $ev) {
+                $s = $ev['type'] . ' ' . $ev['time'];
+                if (!empty($ev['reason'])) $s .= ' (' . $ev['reason'] . ')';
+                $evParts[] = $s;
+            }
             $rows[] = [
                 '  ' . (string)$date,
                 $dTotal,
                 $dAns,
-                (int)($day['missed']    ?? 0),
-                (int)($day['abandoned'] ?? 0),
-                (int)($day['busy']      ?? 0),
-                (int)($day['failed']    ?? 0),
+                $day ? (int)($day['missed']    ?? 0) : 0,
+                $day ? (int)($day['abandoned'] ?? 0) : 0,
+                $day ? (int)($day['busy']      ?? 0) : 0,
+                $day ? (int)($day['failed']    ?? 0) : 0,
                 $dRate,
-                (int)($day['avg_wait_time'] ?? 0),
-                (int)($day['avg_talk_time'] ?? 0),
-                (int)($day['total_billsec'] ?? 0),
+                $day ? (int)($day['avg_wait_time'] ?? 0) : 0,
+                $day ? (int)($day['avg_talk_time'] ?? 0) : 0,
+                $day ? (int)($day['total_billsec'] ?? 0) : 0,
                 '', '', 0, 0, 0,
+                implode(' | ', $evParts),
             ];
         }
     }
