@@ -44,7 +44,7 @@ $preset = (string)($filters['preset'] ?? '');
 $gateway = (string)($filters['gateway'] ?? '');
 
 $totalCardUrl      = buildUrl(['format' => 'html', 'page' => 1, 'preset' => null,         'disposition' => null]);
-$answeredCardUrl   = buildUrl(['format' => 'html', 'page' => 1, 'preset' => null,         'disposition' => 'ANSWERED']);
+$answeredCardUrl   = buildUrl(['format' => 'html', 'page' => 1, 'preset' => 'answered',   'disposition' => null]);
 $missedCardUrl     = buildUrl(['format' => 'html', 'page' => 1, 'preset' => 'missed',     'disposition' => null]);
 $abandonedCardUrl  = buildUrl(['format' => 'html', 'page' => 1, 'preset' => 'abandoned',  'disposition' => null]);
 $busyCardUrl       = buildUrl(['format' => 'html', 'page' => 1, 'preset' => null,         'disposition' => 'BUSY']);
@@ -224,7 +224,7 @@ function cardClass(string $targetPreset, string $targetDisposition, string $curr
       <div class="k">Total Calls</div>
       <div class="v"><?= (int)$total ?></div>
     </a>
-    <a class="card card-link<?= cardClass('', 'ANSWERED', $preset, $disp) ?>" href="<?= h($answeredCardUrl) ?>" title="Filter to answered calls">
+    <a class="card card-link<?= cardClass('answered', '', $preset, $disp) ?>" href="<?= h($answeredCardUrl) ?>" title="Filter to answered calls">
       <div class="k">Answered</div>
       <div class="v" style="color:var(--ok)"><?= (int)$answered ?></div>
     </a>

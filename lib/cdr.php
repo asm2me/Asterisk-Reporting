@@ -137,6 +137,14 @@ function buildWhere(array $CONFIG, array $me, array $filters, array &$params): s
                 // Inbound: calls FROM gateway (source)
                 $where[] = "channel LIKE :gw_preset";
                 $params[':gw_preset'] = $gwPattern;
+            } elseif ($preset === 'answered') {
+                // Answered: only calls with a real bridged local extension leg
+                $where[] = "disposition = 'ANSWERED'";
+                $where[] = "billsec > 0";
+                $where[] = "(
+                    channel REGEXP '^(PJSIP|SIP)/[0-9]+'
+                    OR dstchannel REGEXP '^(PJSIP|SIP)/[0-9]+'
+                )";
             } elseif ($preset === 'outbound') {
                 // Outbound: calls TO gateway (destination)
                 $where[] = "dstchannel LIKE :gw_preset";
@@ -174,6 +182,18 @@ function buildWhere(array $CONFIG, array $me, array $filters, array &$params): s
     if ($preset === 'abandoned') {
         $where[] = "(dstchannel IS NULL OR dstchannel = '' OR dst = 's')";
         $where[] = "dcontext LIKE '%ext-queues%'";
+    }
+
+    // Answered preset without gateway restriction.
+    // Must match the grouped dashboard definition of "answered":
+    // an ANSWERED leg with billsec > 0 bridged to/from a real local extension.
+    if ($preset === 'answered') {
+        $where[] = "disposition = 'ANSWERED'";
+        $where[] = "billsec > 0";
+        $where[] = "(
+            channel REGEXP '^(PJSIP|SIP)/[0-9]+'
+            OR dstchannel REGEXP '^(PJSIP|SIP)/[0-9]+'
+        )";
     }
 
     return implode(' AND ', $where);
@@ -1646,4 +1666,3 @@ function streamExcelBreaks(array $breaksData, string $from, string $to): void {
     }
     streamXlsx($headers, $rows, "breaks_{$from}_to_{$to}.xlsx");
 }
-
