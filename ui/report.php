@@ -42,6 +42,29 @@ $ext    = (string)($filters['ext'] ?? '');
 $selectedExts = $ext !== '' ? array_filter(preg_split('/[,\s]+/', $ext), fn($e) => $e !== '') : [];
 $preset = (string)($filters['preset'] ?? '');
 $gateway = (string)($filters['gateway'] ?? '');
+
+$totalCardUrl      = buildUrl(['format' => 'html', 'page' => 1, 'preset' => null,         'disposition' => null]);
+$answeredCardUrl   = buildUrl(['format' => 'html', 'page' => 1, 'preset' => null,         'disposition' => 'ANSWERED']);
+$missedCardUrl     = buildUrl(['format' => 'html', 'page' => 1, 'preset' => 'missed',     'disposition' => null]);
+$abandonedCardUrl  = buildUrl(['format' => 'html', 'page' => 1, 'preset' => 'abandoned',  'disposition' => null]);
+$busyCardUrl       = buildUrl(['format' => 'html', 'page' => 1, 'preset' => null,         'disposition' => 'BUSY']);
+$failedCardUrl     = buildUrl(['format' => 'html', 'page' => 1, 'preset' => null,         'disposition' => 'FAILED']);
+$concurrentCardUrl = buildUrl(['format' => 'html', 'page' => 1]);
+
+function cardClass(string $targetPreset, string $targetDisposition, string $currentPreset, string $currentDisposition): string {
+    $targetPreset = strtolower(trim($targetPreset));
+    $targetDisposition = strtoupper(trim($targetDisposition));
+    $currentPreset = strtolower(trim($currentPreset));
+    $currentDisposition = strtoupper(trim($currentDisposition));
+
+    if ($targetPreset !== '') {
+        return $currentPreset === $targetPreset ? ' card-link-active' : '';
+    }
+    if ($targetDisposition !== '') {
+        return $currentDisposition === $targetDisposition ? ' card-link-active' : '';
+    }
+    return ($currentPreset === '' && $currentDisposition === '') ? ' card-link-active' : '';
+}
 ?>
 <!doctype html>
 <html lang="en">
@@ -78,6 +101,9 @@ $gateway = (string)($filters['gateway'] ?? '');
   .btn.danger:hover{background:rgba(255,107,122,.22)}
 
   .card{background:rgba(15,26,48,.75);border:1px solid var(--line);border-radius:16px;padding:12px;}
+  .card-link{display:block;color:inherit;text-decoration:none;transition:transform .15s ease, border-color .15s ease, background .15s ease, box-shadow .15s ease;}
+  .card-link:hover{transform:translateY(-2px);border-color:rgba(122,162,255,.35);background:rgba(18,31,56,.92);box-shadow:0 8px 24px rgba(0,0,0,.18);text-decoration:none;}
+  .card-link-active{border-color:rgba(122,162,255,.45);background:rgba(122,162,255,.10);}
   .k{font-size:12px;color:var(--muted);}
   .v{font-size:18px;margin-top:6px;font-weight:650;}
 
@@ -194,13 +220,34 @@ $gateway = (string)($filters['gateway'] ?? '');
   </div>
 
   <div class="grid">
-    <div class="card"><div class="k">Total Calls</div><div class="v"><?= (int)$total ?></div></div>
-    <div class="card"><div class="k">Answered</div><div class="v" style="color:var(--ok)"><?= (int)$answered ?></div></div>
-    <div class="card"><div class="k">Missed (Not Bridged)</div><div class="v" style="color:var(--bad)"><?= (int)$missed ?></div></div>
-    <div class="card"><div class="k">Abandoned (Queue)</div><div class="v" style="color:var(--warn)"><?= (int)$abandoned ?></div></div>
-    <div class="card"><div class="k">Busy</div><div class="v" style="color:var(--bad)"><?= (int)$busy ?></div></div>
-    <div class="card"><div class="k">Failed</div><div class="v" style="color:var(--bad)"><?= (int)$failed ?></div></div>
-    <div class="card"><div class="k">Max Trunk Concurrent</div><div class="v" style="color:var(--accent)" id="maxConcurrentVal">…</div></div>
+    <a class="card card-link<?= cardClass('', '', $preset, $disp) ?>" href="<?= h($totalCardUrl) ?>" title="Show all calls">
+      <div class="k">Total Calls</div>
+      <div class="v"><?= (int)$total ?></div>
+    </a>
+    <a class="card card-link<?= cardClass('', 'ANSWERED', $preset, $disp) ?>" href="<?= h($answeredCardUrl) ?>" title="Filter to answered calls">
+      <div class="k">Answered</div>
+      <div class="v" style="color:var(--ok)"><?= (int)$answered ?></div>
+    </a>
+    <a class="card card-link<?= cardClass('missed', '', $preset, $disp) ?>" href="<?= h($missedCardUrl) ?>" title="Filter to missed calls">
+      <div class="k">Missed (Not Bridged)</div>
+      <div class="v" style="color:var(--bad)"><?= (int)$missed ?></div>
+    </a>
+    <a class="card card-link<?= cardClass('abandoned', '', $preset, $disp) ?>" href="<?= h($abandonedCardUrl) ?>" title="Filter to abandoned queue calls">
+      <div class="k">Abandoned (Queue)</div>
+      <div class="v" style="color:var(--warn)"><?= (int)$abandoned ?></div>
+    </a>
+    <a class="card card-link<?= cardClass('', 'BUSY', $preset, $disp) ?>" href="<?= h($busyCardUrl) ?>" title="Filter to busy calls">
+      <div class="k">Busy</div>
+      <div class="v" style="color:var(--bad)"><?= (int)$busy ?></div>
+    </a>
+    <a class="card card-link<?= cardClass('', 'FAILED', $preset, $disp) ?>" href="<?= h($failedCardUrl) ?>" title="Filter to failed calls">
+      <div class="k">Failed</div>
+      <div class="v" style="color:var(--bad)"><?= (int)$failed ?></div>
+    </a>
+    <a class="card card-link" href="<?= h($concurrentCardUrl) ?>" title="Keep current CDR filters while viewing max trunk concurrency">
+      <div class="k">Max Trunk Concurrent</div>
+      <div class="v" style="color:var(--accent)" id="maxConcurrentVal">…</div>
+    </a>
   </div>
 
   <?php if ($isAdmin && is_array($serviceStatus)): ?>
