@@ -125,6 +125,8 @@ $availableExtensions = fetchAvailableExtensions($CONFIG, $pdo, $me, $from, $to);
 $summary = fetchSummary($CONFIG, $pdo, $me, $filters);
 $total   = (int)($summary['total'] ?? 0);
 
+$serviceStatus = $isAdmin ? getRealtimeServiceStatus($pdo) : null;
+
 $pages = max(1, (int)ceil($total / $per));
 if ($pageNo > $pages) $pageNo = $pages;
 $filters['page'] = $pageNo;
@@ -146,4 +148,3 @@ $linkedIds = array_unique(array_column($rows, 'linkedid'));
 $callLegsByLinkedId = fetchCallLegsForRows($CONFIG, $pdo, $linkedIds);
 
 require __DIR__ . '/ui/report.php';
-

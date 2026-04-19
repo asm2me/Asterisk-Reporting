@@ -15,6 +15,7 @@ use function sortLink;
 /** @var int $pages */
 /** @var array $rows */
 /** @var array $availableGateways */
+/** @var ?array $serviceStatus */
 
 $answered     = (int)($summary['answered'] ?? 0);
 $busy         = (int)($summary['busy'] ?? 0);
@@ -201,6 +202,85 @@ $gateway = (string)($filters['gateway'] ?? '');
     <div class="card"><div class="k">Failed</div><div class="v" style="color:var(--bad)"><?= (int)$failed ?></div></div>
     <div class="card"><div class="k">Max Trunk Concurrent</div><div class="v" style="color:var(--accent)" id="maxConcurrentVal">…</div></div>
   </div>
+
+  <?php if ($isAdmin && is_array($serviceStatus)): ?>
+    <?php if (!empty($serviceStatus['has_stale_updates'])): ?>
+      <div class="card" style="margin-bottom:12px;border-color:rgba(255,107,122,.35);background:rgba(255,107,122,.08);">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+          <div>
+            <div class="k" style="color:var(--bad)">Admin Alert</div>
+            <div class="v" style="color:var(--bad)">No break/login update in the last 24 hours</div>
+            <div class="muted" style="margin-top:8px;">
+              <?= h(implode(' · ', (array)($serviceStatus['stale_messages'] ?? []))) ?>
+            </div>
+          </div>
+          <div>
+            <span class="disp bad">Action Required</span>
+          </div>
+        </div>
+      </div>
+    <?php endif; ?>
+
+    <div class="card" style="margin-bottom:12px;">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+        <div>
+          <div class="k">Realtime Service Status</div>
+          <div class="v" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <span><?= h((string)($serviceStatus['service'] ?? 'asterisk-realtime-websocket.service')) ?></span>
+            <span class="disp <?= h((string)($serviceStatus['health_class'] ?? 'warn')) ?>">
+              <?= h((string)($serviceStatus['health_text'] ?? 'Unknown')) ?>
+            </span>
+          </div>
+          <div class="muted" style="margin-top:8px;"><?= h((string)($serviceStatus['summary'] ?? '')) ?></div>
+        </div>
+        <div class="muted" style="text-align:right;">
+          <div>State: <span class="mono"><?= h((string)($serviceStatus['active_state'] ?? 'unknown')) ?><?= !empty($serviceStatus['sub_state']) ? ' / ' . h((string)$serviceStatus['sub_state']) : '' ?></span></div>
+          <div>PID: <span class="mono"><?= h((string)($serviceStatus['main_pid'] ?? '')) ?: '—' ?></span></div>
+        </div>
+      </div>
+
+      <div class="detail-grid" style="margin-top:12px;">
+        <div class="detail-item">
+          <span class="detail-label">Latest Agent Event</span>
+          <span class="detail-value mono"><?= h((string)($serviceStatus['agent_event_max'] ?? '')) ?: 'None' ?></span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Event Freshness</span>
+          <span class="detail-value"><?= h((string)($serviceStatus['agent_event_age_text'] ?? 'Unknown')) ?></span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Last Login Update</span>
+          <span class="detail-value mono"><?= h((string)($serviceStatus['last_login_event_max'] ?? '')) ?: 'None' ?></span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Login Freshness</span>
+          <span class="detail-value">
+            <?= h((string)($serviceStatus['last_login_event_age_text'] ?? 'Unknown')) ?>
+            <?php if (!empty($serviceStatus['login_stale'])): ?><span class="disp bad" style="margin-left:8px;">24h+</span><?php endif; ?>
+          </span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Last Break Update</span>
+          <span class="detail-value mono"><?= h((string)($serviceStatus['last_break_event_max'] ?? '')) ?: 'None' ?></span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Break Freshness</span>
+          <span class="detail-value">
+            <?= h((string)($serviceStatus['last_break_event_age_text'] ?? 'Unknown')) ?>
+            <?php if (!empty($serviceStatus['break_stale'])): ?><span class="disp bad" style="margin-left:8px;">24h+</span><?php endif; ?>
+          </span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Agent Event Rows</span>
+          <span class="detail-value"><?= (int)($serviceStatus['agent_event_count'] ?? 0) ?></span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Service Active Since</span>
+          <span class="detail-value"><?= h((string)($serviceStatus['since'] ?? '')) ?: 'Unknown' ?></span>
+        </div>
+      </div>
+    </div>
+  <?php endif; ?>
 
   <div class="card" style="margin-bottom:12px;">
     <div class="k" style="margin-bottom:10px;">Totals Bar Chart</div>
@@ -680,4 +760,3 @@ document.addEventListener('click', function(e) {
 
 </body>
 </html>
-
