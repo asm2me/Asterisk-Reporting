@@ -65,7 +65,8 @@ use function fmtTime;
   @media(min-width:900px){.filters{grid-template-columns:repeat(3, minmax(0,1fr));}}
 
   label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
-  input,select{width:100%;background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:10px;font-size:13px;outline:none}
+  input,select{width:100%;background:rgba(6,12,24,.96);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:10px;font-size:13px;outline:none}
+  select option{background:#08101d;color:var(--text);}
 
   .actions{display:flex;gap:10px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
   button{background:rgba(68,209,157,.12);border:1px solid rgba(68,209,157,.25);color:var(--text);padding:10px 12px;border-radius:12px;font-size:13px;cursor:pointer;white-space:nowrap}
@@ -88,9 +89,9 @@ use function fmtTime;
 
   /* Multi-select extension dropdown */
   .multiselect-wrap{position:relative;}
-  .multiselect-btn{width:100%;background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:10px;font-size:13px;outline:none;cursor:pointer;text-align:left;display:flex;justify-content:space-between;align-items:center;}
+  .multiselect-btn{width:100%;background:rgba(6,12,24,.96);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:10px;font-size:13px;outline:none;cursor:pointer;text-align:left;display:flex;justify-content:space-between;align-items:center;}
   .multiselect-btn:hover{border-color:var(--accent);}
-  .multiselect-dropdown{display:none;position:absolute;top:100%;left:0;right:0;z-index:50;background:var(--card);border:1px solid var(--line);border-radius:12px;max-height:240px;overflow:auto;margin-top:4px;padding:6px 0;}
+  .multiselect-dropdown{display:none;position:absolute;top:100%;left:0;right:0;z-index:50;background:#08101d;border:1px solid rgba(122,162,255,.18);border-radius:12px;max-height:240px;overflow:auto;margin-top:4px;padding:6px 0;box-shadow:0 12px 28px rgba(0,0,0,.35);}
   .multiselect-dropdown.open{display:block;}
   .multiselect-dropdown label{display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:13px;margin:0;}
   .multiselect-dropdown label:hover{background:rgba(255,255,255,.04);}

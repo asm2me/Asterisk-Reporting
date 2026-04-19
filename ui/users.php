@@ -36,7 +36,8 @@ use function h;
     .btn-danger:hover{background:rgba(255,107,122,.20)}
     .form-card{background:rgba(15,26,48,.8);border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:20px;margin-bottom:20px}
     label{display:block;margin-top:12px;font-size:13px;color:#9fb0d0}
-    input,select{width:100%;box-sizing:border-box;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10);color:#e8eefc;border-radius:6px;padding:8px;font-size:13px;margin-top:4px}
+    input,select{width:100%;box-sizing:border-box;background:rgba(6,12,24,.96);border:1px solid rgba(255,255,255,.10);color:#e8eefc;border-radius:6px;padding:8px;font-size:13px;margin-top:4px}
+    select option{background:#08101d;color:#e8eefc;}
     button{margin-top:12px;background:rgba(68,209,157,.14);border:1px solid rgba(68,209,157,.25);color:#e8eefc;padding:10px 16px;border-radius:8px;cursor:pointer;font-size:13px}
     .form-actions{margin-top:16px;display:flex;gap:10px}
     .back-link{display:inline-block;margin-bottom:20px}
