@@ -297,10 +297,6 @@ function cardClass(string $targetPreset, string $targetDisposition, string $curr
           <span class="detail-value"><?= h((string)($serviceStatus['agent_event_age_text'] ?? 'Unknown')) ?></span>
         </div>
         <div class="detail-item">
-          <span class="detail-label">Last Login Update</span>
-          <span class="detail-value mono"><?= h((string)($serviceStatus['last_login_event_max'] ?? '')) ?: 'None' ?></span>
-        </div>
-        <div class="detail-item">
           <span class="detail-label">Login Freshness</span>
           <span class="detail-value">
             <?= h((string)($serviceStatus['last_login_event_age_text'] ?? 'Unknown')) ?>
@@ -308,23 +304,11 @@ function cardClass(string $targetPreset, string $targetDisposition, string $curr
           </span>
         </div>
         <div class="detail-item">
-          <span class="detail-label">Last Break Update</span>
-          <span class="detail-value mono"><?= h((string)($serviceStatus['last_break_event_max'] ?? '')) ?: 'None' ?></span>
-        </div>
-        <div class="detail-item">
           <span class="detail-label">Break Freshness</span>
           <span class="detail-value">
             <?= h((string)($serviceStatus['last_break_event_age_text'] ?? 'Unknown')) ?>
             <?php if (!empty($serviceStatus['break_stale'])): ?><span class="disp bad" style="margin-left:8px;">24h+</span><?php endif; ?>
           </span>
-        </div>
-        <div class="detail-item">
-          <span class="detail-label">Agent Event Rows</span>
-          <span class="detail-value"><?= (int)($serviceStatus['agent_event_count'] ?? 0) ?></span>
-        </div>
-        <div class="detail-item">
-          <span class="detail-label">Service Active Since</span>
-          <span class="detail-value"><?= h((string)($serviceStatus['since'] ?? '')) ?: 'Unknown' ?></span>
         </div>
       </div>
     </div>
